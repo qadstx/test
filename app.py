@@ -1,107 +1,119 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
-import re
 from io import BytesIO
+import re
+import os
 
-st.set_page_config(page_title="Data Auto-Filler", layout="wide")
+# ตั้งค่าหน้าจอ
+st.set_page_config(page_title="Excel Auto-Filler", layout="wide")
 
-st.title("📊 Auto-Fill Form System (Cav 1 & Cav 2)")
-st.info("อัพโหลดไฟล์ข้อมูลเพื่อนำไปเติมในฟอร์ม Template ที่เตรียมไว้บน GitHub")
+# --- CONFIGURATION ---
+# ชื่อไฟล์เทมเพลตที่อยู่ในโฟลเดอร์เดียวกับโค้ดบน GitHub
+TEMPLATE_FILENAME = "form_template.xlsx" 
 
-# --- Helper Functions ---
-def clean_item_name(name):
-    """ฟังก์ชันดึงส่วนสำคัญของชื่อ Item เช่น a_B-41 -> B41"""
-    if pd.isna(name): return ""
-    name = str(name)
-    # ลบอักขระพิเศษเหลือแค่ตัวอักษร ตัวเลข และเครื่องหมายลบ (ถ้ามี)
-    # หรือปรับเปลี่ยนตาม Logic ที่ต้องการเพื่อให้ match กันได้
-    # ในที่นี้จะลองดึง pattern ที่เป็น B ตามด้วยตัวเลข
-    match = re.search(r'[Bb]\d+([-]\d+)?', name)
-    return match.group(0).upper() if match else name.strip()
+def clean_string(s):
+    """ฟังก์ชันทำความสะอาดชื่อ Item: ลบช่องว่าง, อักขระพิเศษ และทำให้เป็นตัวพิมพ์เล็ก"""
+    if pd.isna(s): return ""
+    # ลบอักขระที่ไม่ใช่ตัวอักษรหรือตัวเลข (ยกเว้นขีดกลางถ้าจำเป็น)
+    # ในที่นี้จะลบพวก _ หรือช่องว่างออกเพื่อให้ match กันง่ายขึ้น
+    cleaned = re.sub(r'[^a-zA-Z0-9-]', '', str(s))
+    return cleaned.lower()
 
-def process_excel(template_file, data_file):
-    # โหลด Template ด้วย openpyxl เพื่อรักษา Format และ Merge Cells
-    wb = openpyxl.load_workbook(template_file)
+def process_data(template_path, data_file):
+    # 1. โหลด Template ด้วย openpyxl เพื่อรักษา Merge Cells และ Formatting
+    wb = openpyxl.load_workbook(template_path)
     
-    # อ่านไฟล์ข้อมูล (Source) ด้วย Pandas
-    # คอลัมน์ A11 (Index 0), G,H,I (Cav1), L,M,N (Cav2)
-    # หมายเหตุ: ใน Pandas index เริ่มที่ 0 ดังนั้น A11 คือแถวที่ 10
-    df_data = pd.read_excel(data_file, skiprows=10) # ข้ามไปที่บรรทัด 11
+    # 2. อ่านไฟล์ข้อมูลที่อัพโหลด (Source) ด้วย Pandas
+    # ข้าม 10 แถวแรก เพื่อเริ่มอ่านแถวที่ 11 (Index 10)
+    df_source = pd.read_excel(data_file, skiprows=10)
     
-    # สมมติชื่อคอลัมน์ตามตำแหน่งที่แจ้ง (หรือใช้ index)
-    # A=0, G=6, H=7, I=8, L=11, M=12, N=13
+    # สร้าง Dictionary เก็บข้อมูล: { 'item_id': { 'cav1': [g,h,i], 'cav2': [l,m,n] } }
     data_map = {}
-    for _, row in df_data.iterrows():
-        raw_item = str(row.iloc[0])
-        clean_key = clean_item_name(raw_item)
-        data_map[clean_key] = {
-            'cav1': [row.iloc[6], row.iloc[7], row.iloc[8]],
-            'cav2': [row.iloc[11], row.iloc[12], row.iloc[13]]
+    for _, row in df_source.iterrows():
+        item_raw = row.iloc[0] # คอลัมน์ A (Item Name)
+        if pd.isna(item_raw): continue
+        
+        item_id = clean_string(item_raw)
+        data_map[item_id] = {
+            'cav1': [row.iloc[6], row.iloc[7], row.iloc[8]],   # G, H, I
+            'cav2': [row.iloc[11], row.iloc[12], row.iloc[13]] # L, M, N
         }
 
-    # รายชื่อชีทที่ต้องจัดการ
+    # 3. จัดการทั้ง 2 ชีทในไฟล์ Template
     target_sheets = ["Cav 1", "Cav 2"]
     
     for sheet_name in target_sheets:
         if sheet_name not in wb.sheetnames:
+            st.warning(f"ไม่พบชีทชื่อ '{sheet_name}' ในไฟล์เทมเพลต")
             continue
             
         ws = wb[sheet_name]
-        data_key = 'cav1' if sheet_name == "Cav 1" else 'cav2'
+        mode = 'cav1' if sheet_name == "Cav 1" else 'cav2'
         
-        # เริ่มไล่จากแถวที่ 8 (A8) ลงไปตามที่แจ้ง
-        # เราจะเช็คคอลัมน์ A เพื่อหา Item No.
-        current_item_name = None
+        current_item_key = None
         
-        for row_idx in range(8, ws.max_row + 1):
-            cell_a = ws.cell(row=row_idx, column=1)
+        # เริ่มไล่ตั้งแต่แถวที่ 8 ตามที่ระบุ
+        for r in range(8, ws.max_row + 1):
+            cell_a_value = ws.cell(row=r, column=1).value
             
-            # ถ้าเป็นช่อง Merge ค่าจะอยู่ที่ Cell แรก, ช่องถัดไปจะเป็น None
-            if cell_a.value:
-                current_item_name = clean_item_name(cell_a.value)
+            # ถ้า Cell A มีค่า (ไม่ใช่ None จากการ Merge) ให้ Update Item ปัจจุบัน
+            if cell_a_value is not None:
+                current_item_key = clean_string(cell_a_value)
             
-            # ถ้าเจอ Item ที่ตรงกับในไฟล์อัพโหลด
-            if current_item_name in data_map:
-                vals = data_map[current_item_name][data_key]
+            # ถ้า Item ปัจจุบันมีข้อมูลใน data_map ให้ทำการกรอก
+            # หมายเหตุ: จะกรอกเฉพาะแถวที่มีการ match เจอ และคุณบอกว่า "กรอกช่องเว้นช่อง"
+            # ปกติถ้าเป็นช่องที่ต้องกรอก มักจะมี format หรือว่างไว้ 
+            # ในที่นี้จะกรอกข้อมูลลงไปในคอลัมน์ M, N, O (13, 14, 15)
+            if current_item_key in data_map:
+                source_vals = data_map[current_item_key][mode]
                 
-                # กรอกข้อมูลที่ M, N, O (คอลัมน์ 13, 14, 15)
-                # เช็คเงื่อนไข "ช่องเว้นช่อง" 
-                # ในที่นี้สมมติว่าถ้าเป็นแถวที่จะกรอก จะมี Format บางอย่าง 
-                # หรือกรอกทุกแถวที่อยู่ในขอบเขตของ Item นั้นแต่ตรวจสอบช่องว่าง
-                ws.cell(row=row_idx, column=13).value = vals[0]
-                ws.cell(row=row_idx, column=14).value = vals[1]
-                ws.cell(row=row_idx, column=15).value = vals[2]
+                # เช็คว่าช่อง M (13) ว่างหรือไม่ก่อนกรอก เพื่อป้องกันการเขียนทับหัวข้อหรือช่องที่ไม่เกี่ยวข้อง
+                # หรือถ้าต้องการกรอกทุกแถวที่อยู่ใน Block ของ Item นั้นก็รันต่อได้เลย
+                ws.cell(row=r, column=13).value = source_vals[0]
+                ws.cell(row=r, column=14).value = source_vals[1]
+                ws.cell(row=r, column=15).value = source_vals[2]
 
-    # บันทึกลง Memory
-    output = BytesIO()
-    wb.save(output)
-    return output.getvalue()
+    # บันทึกไฟล์ลง Memory เพื่อเตรียมให้ Download
+    out_stream = BytesIO()
+    wb.save(out_stream)
+    return out_stream.getvalue()
 
-# --- UI ส่วนการจัดการไฟล์ ---
-# ในการใช้งานจริง Template ควรจะดึงจาก GitHub โดยตรง (ต้องใช้ raw link)
-template_url = "https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/template.xlsx"
+# --- UI INTERFACE ---
+st.header("📋 โปรแกรมกรอกข้อมูลฟอร์มอัตโนมัติ")
+st.write(f"ไฟล์เทมเพลตที่ใช้: `{TEMPLATE_FILENAME}`")
 
-uploaded_data = st.file_uploader("1. อัพโหลดไฟล์ข้อมูล (Source File)", type=["xlsx"])
-uploaded_template = st.file_uploader("2. หรืออัพโหลดไฟล์ฟอร์ม (ถ้าไม่ใช้ตัวบน GitHub)", type=["xlsx"])
+# ตรวจสอบว่ามีไฟล์เทมเพลตอยู่ในโฟลเดอร์ไหม
+if not os.path.exists(TEMPLATE_FILENAME):
+    st.error(f"❌ ไม่พบไฟล์ `{TEMPLATE_FILENAME}` ใน GitHub Repository ของคุณ กรุณาตรวจสอบชื่อไฟล์")
+else:
+    uploaded_file = st.file_uploader("อัพโหลดไฟล์ข้อมูล (Source .xlsx)", type=["xlsx"])
 
-if st.button("เริ่มทำการ Fill ข้อมูล"):
-    if uploaded_data and (uploaded_template or template_url):
-        with st.spinner("กำลังประมวลผล..."):
+    if uploaded_file is not None:
+        if st.button("🚀 ประมวลผลและสร้างไฟล์ใหม่"):
             try:
-                # ใช้ไฟล์ที่อัพโหลด หรือถ้าไม่มีให้ไปดึงจาก GitHub/ที่ระบุ
-                temp_file = uploaded_template if uploaded_template else uploaded_template # ปรับแก้ตามสะดวก
-                
-                final_file = process_excel(temp_file, uploaded_data)
-                
-                st.success("เสร็จเรียบร้อย!")
+                with st.spinner("กำลังดึงข้อมูลและแมปช่องว่าง..."):
+                    result_xlsx = process_data(TEMPLATE_FILENAME, uploaded_file)
+                    
+                st.success("✅ ดำเนินการเสร็จสิ้น!")
                 st.download_button(
-                    label="ดาวน์โหลดไฟล์ที่เติมข้อมูลแล้ว",
-                    data=final_file,
-                    file_name="Filled_Form.xlsx",
+                    label="📥 ดาวน์โหลดไฟล์ที่กรอกข้อมูลแล้ว",
+                    data=result_xlsx,
+                    file_name="Filled_Result.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             except Exception as e:
-                st.error(f"เกิดข้อผิดพลาด: {e}")
-    else:
-        st.warning("กรุณาอัพโหลดไฟล์ให้ครบถ้วน")
+                st.error(f"เกิดข้อผิดพลาด: {str(e)}")
+                st.info("คำแนะนำ: ตรวจสอบว่าไฟล์ที่อัพโหลดมีโครงสร้างแถวที่ 11 เป็นต้นไปตามที่ตกลงกันไว้หรือไม่")
+
+# --- สรุปคำแนะนำการใช้งาน ---
+with st.expander("ดูวิธีใช้งานและข้อกำหนด"):
+    st.markdown("""
+    1. **ไฟล์เทมเพลต:** ต้องชื่อ `form_template.xlsx` และอยู่ในโฟลเดอร์เดียวกับ `app.py`
+    2. **โครงสร้างไฟล์ข้อมูล:** 
+       - ข้อมูลเริ่มที่แถว 11 (A11 คือชื่อ Item)
+       - Cav 1 อยู่ที่ Column G, H, I
+       - Cav 2 อยู่ที่ Column L, M, N
+    3. **การแมปข้อมูล:** ระบบจะพยายามค้นหาชื่อ Item ที่ใกล้เคียงที่สุด (เช่น B-41 กับ B41 จะถือว่าเป็นตัวเดียวกัน)
+    4. **การกรอก:** จะกรอกลงในคอลัมน์ M, N, O ของชีท Cav 1 และ Cav 2 ตามลำดับ
+    """)
