@@ -5,36 +5,44 @@ from io import BytesIO
 import re
 import os
 
-st.set_page_config(page_title="Excel Auto-Filler v3", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v4", layout="wide")
 
 TEMPLATE_FILENAME = "form_template.xlsx" 
 
-def clean_string(s):
+def intensive_clean(s):
+    """ลบทุกอย่างที่ไม่ใช่ตัวเลขและตัวอักษร และตัดเว้นวรรคทิ้งทั้งหมด"""
     if pd.isna(s): return ""
-    # ดึงเฉพาะตัวอักษรและตัวเลข และทำเป็นตัวพิมพ์เล็ก
-    return re.sub(r'[^a-zA-Z0-9]', '', str(s)).lower()
+    text = str(s).strip()
+    # ลบอักขระพิเศษและช่องว่างทั้งหมด
+    cleaned = re.sub(r'[^a-zA-Z0-9]', '', text)
+    return cleaned.lower()
 
 def process_data(template_path, data_file):
     wb = openpyxl.load_workbook(template_path)
     
-    # อ่านไฟล์ข้อมูลแถวที่ 11 เป็นต้นไป
+    # อ่านไฟล์ข้อมูลแถวที่ 11
     df_source = pd.read_excel(data_file, skiprows=10)
     
-    # ดึงข้อมูลจากไฟล์ Source เก็บไว้เป็นรายการทั้งหมด
-    # โครงสร้าง: [ {'id': 'b84a', 'cav1': [...], 'cav2': [...]}, ... ]
     all_source_data = []
+    # เก็บ Log ไว้เช็ค
+    source_items_found = []
+
     for _, row in df_source.iterrows():
         item_raw = row.iloc[0]
         if pd.isna(item_raw): continue
         
+        clean_id = intensive_clean(item_raw)
+        source_items_found.append(clean_id)
+        
         all_source_data.append({
-            'clean_id': clean_string(item_raw),
+            'clean_id': clean_id,
             'cav1': [row.iloc[6], row.iloc[7], row.iloc[8]],   # G, H, I
             'cav2': [row.iloc[11], row.iloc[12], row.iloc[13]] # L, M, N
         })
 
     target_sheets = ["Cav 1", "Cav 2"]
-    
+    log_messages = []
+
     for sheet_name in target_sheets:
         if sheet_name not in wb.sheetnames:
             continue
@@ -46,42 +54,39 @@ def process_data(template_path, data_file):
         matched_data_for_item = []
         item_usage_idx = 0
 
-        # ไล่ตั้งแต่แถวที่ 8 ลงไป
         for r in range(8, ws.max_row + 1):
             cell_a_value = ws.cell(row=r, column=1).value
             
-            # เมื่อเจอชื่อ Item ใหม่ในคอลัมน์ A (ช่องที่ Merge ไว้)
             if cell_a_value is not None:
-                current_item_key = clean_string(cell_a_value)
-                # ค้นหาข้อมูลใน all_source_data ที่ "ขึ้นต้นด้วย" current_item_key
-                # เช่น ถ้าฟอร์มคือ 'b84' จะแมปกับ 'b84a', 'b84b' ในไฟล์ข้อมูล
+                current_item_key = intensive_clean(cell_a_value)
+                # ค้นหาข้อมูล: ใช้ regex เช็คว่าชื่อใน source มีชื่อใน template อยู่ข้างในหรือไม่
+                # เช่น ถ้า template คือ 'b86' ให้เจอ 'b86', 'b86a', 'itemb86'
                 matched_data_for_item = [
                     d[mode] for d in all_source_data 
-                    if d['clean_id'].startswith(current_item_key)
+                    if current_item_key in d['clean_id']
                 ]
-                item_usage_idx = 0 # รีเซ็ตตัวนับการใช้ข้อมูลสำหรับ Item นี้
+                item_usage_idx = 0
+                
+                if matched_data_for_item:
+                    log_messages.append(f"Sheet {sheet_name}: Found {len(matched_data_for_item)} matches for Item {cell_a_value}")
 
-            # ตรวจสอบคอลัมน์ L ว่าเป็น "Supplier" หรือไม่ (ช่องสีเหลือง)
+            # เช็คคำว่า Supplier ในคอลัมน์ L
             correlation_val = str(ws.cell(row=r, column=12).value).strip().lower()
             
             if "supplier" in correlation_val and matched_data_for_item:
-                # ถ้ายังมีข้อมูลที่แมปไว้เหลืออยู่
                 if item_usage_idx < len(matched_data_for_item):
                     vals = matched_data_for_item[item_usage_idx]
-                    
-                    # กรอกลงช่อง M, N, O
                     ws.cell(row=r, column=13).value = vals[0]
                     ws.cell(row=r, column=14).value = vals[1]
                     ws.cell(row=r, column=15).value = vals[2]
-                    
                     item_usage_idx += 1
 
     out_stream = BytesIO()
     wb.save(out_stream)
-    return out_stream.getvalue()
+    return out_stream.getvalue(), log_messages
 
-# --- UI ส่วนเดิม ---
-st.header("📋 Auto-Fill v3 (Fixed B84/B85 Mapping)")
+# --- UI ---
+st.header("📋 Auto-Fill v4 (Intensive Mapping)")
 
 if not os.path.exists(TEMPLATE_FILENAME):
     st.error(f"❌ ไม่พบไฟล์ `{TEMPLATE_FILENAME}`")
@@ -90,8 +95,14 @@ else:
     if uploaded_file:
         if st.button("🚀 เริ่มกรอกข้อมูล"):
             try:
-                result_xlsx = process_data(TEMPLATE_FILENAME, uploaded_file)
-                st.success("✅ แก้ไขการแมปชื่อ B84, B85 และกรอกข้อมูลเรียบร้อย!")
-                st.download_button(label="📥 ดาวน์โหลดไฟล์", data=result_xlsx, file_name="Fixed_Mapping_Result.xlsx")
+                result_xlsx, logs = process_data(TEMPLATE_FILENAME, uploaded_file)
+                st.success("✅ ประมวลผลเสร็จสิ้น!")
+                
+                with st.expander("ดูรายการ Item ที่ระบบตรวจเจอ"):
+                    for msg in logs[:20]: # แสดงแค่ 20 อันแรก
+                        st.write(msg)
+                    if len(logs) > 20: st.write("...")
+
+                st.download_button(label="📥 ดาวน์โหลดไฟล์", data=result_xlsx, file_name="Full_Fill_Result.xlsx")
             except Exception as e:
                 st.error(f"เกิดข้อผิดพลาด: {str(e)}")
