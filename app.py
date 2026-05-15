@@ -6,7 +6,7 @@ from io import BytesIO
 import re
 import math
 
-st.set_page_config(page_title="Excel Auto-Filler v21", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v22", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx" 
 
 def get_base_id(s):
@@ -17,7 +17,6 @@ def get_base_id(s):
     return text
 
 def clean_number(value):
-    """ตัดทศนิยมทิ้งที่หลักที่ 5 (Absolute Value)"""
     try:
         if value is None or pd.isna(value): return None
         num = abs(float(value))
@@ -48,7 +47,6 @@ def scan_lat_data(df):
         for col_idx, raw_name in enumerate(names):
             base_id = get_base_id(raw_name)
             if base_id and (base_id.startswith('B') or base_id.startswith('N')):
-                # เก็บเป็น 3 ค่าแยกกันเพื่อหยอด 3 บรรทัด
                 d1 = clean_number(df.iloc[sec['data_start'], col_idx])
                 d2 = clean_number(df.iloc[sec['data_start']+1, col_idx])
                 d3 = clean_number(df.iloc[sec['data_start']+2, col_idx])
@@ -96,23 +94,23 @@ def process_data(template_path, all_dim_file, lat_file):
         mode = 'cav1' if sheet_name == "Cav 1" else 'cav2'
         current_id, current_ptr = None, 0
         
-        # สำหรับ N7: เตรียม List ข้อมูลที่จะหยอดทีละบรรทัด
-        n7_data_to_fill = []
+        # N7: รวมข้อมูลเป็น List ของ [Sample1, Sample2, Sample3]
+        n7_data_list = []
         if 'N7' in lat_source[mode]:
-            for sets in lat_source[mode]['N7']:
-                # sets คือ [Sample1, Sample2, Sample3]
-                n7_data_to_fill.extend(sets)
-        n7_idx = 0
+            n7_data_list = lat_source[mode]['N7']
+        n7_ptr = 0
 
         for r in range(1, ws.max_row + 1):
-            # --- ข้อยกเว้น N7 (1977-2056) หยอดเรียงบรรทัด Sample 1,2,3 ---
+            # --- ข้อยกเว้น N7: หยอดทีละ 3 คอลัมน์ (M, N, O) ต่อเนื่อง ---
             if 1977 <= r <= 2056:
-                if n7_idx < len(n7_data_to_fill):
-                    cell = ws.cell(row=r, column=13)
-                    if not isinstance(cell, MergedCell):
-                        cell.value = n7_data_to_fill[n7_idx]
-                        cell.number_format = '0.00000'
-                        n7_idx += 1
+                if n7_ptr < len(n7_data_list):
+                    vals = n7_data_list[n7_ptr]
+                    for i, col in enumerate([13, 14, 15]):
+                        cell = ws.cell(row=r, column=col)
+                        if not isinstance(cell, MergedCell):
+                            cell.value = vals[i]
+                            cell.number_format = '0.00000'
+                    n7_ptr += 1
                 continue
 
             # --- Logic ปกติ ---
@@ -125,8 +123,6 @@ def process_data(template_path, all_dim_file, lat_file):
             l_val = str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower()
             if "supplier" in l_val and current_id:
                 target_id = "N10" if current_id == "N11" else current_id
-                
-                # แยก B1-B80 ออกมาใช้ LAT
                 is_b_lat = target_id.startswith('B') and any(target_id == f"B{i}" for i in range(1, 81))
                 
                 vals = None
@@ -152,17 +148,15 @@ def process_data(template_path, all_dim_file, lat_file):
     return out_stream.getvalue()
 
 # UI
-st.header("📋 Auto-Filler v21 (N7 3-Sample Fix)")
-st.info("แก้ไข: N7 หยอด Sample 1, 2, 3 เรียงลงมาคนละบรรทัดในช่วง 1977-2056")
-
+st.header("📋 Auto-Filler v22 (N7 Full Columns Fix)")
 all_f = st.file_uploader("📂 ไฟล์ All dimension", type=["xlsx"])
 lat_f = st.file_uploader("📂 ไฟล์ LAT", type=["xlsx"])
 
 if all_f and lat_f:
-    if st.button("🚀 ประมวลผล V21"):
+    if st.button("🚀 ประมวลผล V22"):
         try:
             res = process_data(TEMPLATE_FILENAME, all_f, lat_f)
-            st.success("✅ ประมวลผลสำเร็จ! N7 หยอดแบบ 3-Sample เรียบร้อย")
-            st.download_button("📥 ดาวน์โหลด", res, file_name="V21_N7_Corrected.xlsx")
+            st.success("✅ สำเร็จ! N7 หยอดเต็มทั้ง 3 คอลัมน์ (M, N, O) เรียบร้อย")
+            st.download_button("📥 ดาวน์โหลด", res, file_name="V22_N7_FullFill.xlsx")
         except Exception as e:
             st.error(f"Error: {e}")
