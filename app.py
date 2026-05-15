@@ -4,9 +4,8 @@ import openpyxl
 from openpyxl.cell.cell import MergedCell
 from io import BytesIO
 import re
-import os
 
-st.set_page_config(page_title="Excel Auto-Filler v18", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v19", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx" 
 
 def get_base_id(s):
@@ -35,7 +34,7 @@ def scan_lat_data(df):
         {'name_row': 11, 'data_start': 29},   # B1-B32
         {'name_row': 65, 'data_start': 83},   # B33-B52
         {'name_row': 119, 'data_start': 136}, # B53-B68
-        {'name_row': 172, '0': 189},          # B69-B80
+        {'name_row': 172, 'data_start': 189}, # B69-B80
         {'name_row': 278, 'data_start': 295}, # N7 ชุด 1
         {'name_row': 329, 'data_start': 348}, # N7 ชุด 2
         {'name_row': 384, 'data_start': 401}  # N7/N10
@@ -48,16 +47,18 @@ def scan_lat_data(df):
             if base_id and (base_id.startswith('B') or base_id.startswith('N')):
                 data_points = []
                 for i in range(3):
-                    row_idx = sec.get('data_start', 189) + i # แก้ไขพิกัดชุด 4
+                    row_idx = sec['data_start'] + i
                     if row_idx < len(df):
                         data_points.append(clean_number(df.iloc[row_idx, col_idx]))
-                lat_map[base_id] = data_points
+                # เก็บข้อมูลไว้ใน List เพื่อรองรับการมีหลายชุด (โดยเฉพาะ N7)
+                if base_id not in lat_map: lat_map[base_id] = []
+                lat_map[base_id].append(data_points)
     return lat_map
 
 def process_data(template_path, all_dim_file, lat_file):
     wb = openpyxl.load_workbook(template_path)
     
-    # 1. โหลดข้อมูล All Dimension (Logic เดิม)
+    # 1. โหลด All Dimension
     df_all = pd.read_excel(all_dim_file, header=None)
     cav1_idx, cav2_idx = None, None
     for _, row in df_all.iterrows():
@@ -78,7 +79,7 @@ def process_data(template_path, all_dim_file, lat_file):
             'cav2': [clean_number(row.iloc[cav2_idx]), clean_number(row.iloc[cav2_idx+1]), clean_number(row.iloc[cav2_idx+2])]
         })
 
-    # 2. โหลดข้อมูล LAT
+    # 2. โหลด LAT
     lat_source = {'cav1': {}, 'cav2': {}}
     if lat_file:
         for m, s in [('cav1', 'LAT (Cav 1)'), ('cav2', 'LAT (Cav 2)')]:
@@ -93,8 +94,23 @@ def process_data(template_path, all_dim_file, lat_file):
         ws = wb[sheet_name]
         mode = 'cav1' if sheet_name == "Cav 1" else 'cav2'
         current_id, current_ptr = None, 0
+        n7_global_ptr = 0 # ตัวนับพิเศษสำหรับ N7
 
         for r in range(1, ws.max_row + 1):
+            # --- ข้อยกเว้น N7: ช่วงแถว 1977-2056 กรอกต่อเนื่องไม่ต้องเช็ค Supplier ---
+            if 1977 <= r <= 2056:
+                if 'N7' in lat_source[mode]:
+                    # รวมข้อมูล N7 ทั้งหมดที่มี (Flatten list)
+                    all_n7_data = [item for sublist in lat_source[mode]['N7'] for item in sublist]
+                    if n7_global_ptr < len(all_n7_data):
+                        # หยอดลงคอลัมน์ M (13)
+                        cell = ws.cell(row=r, column=13)
+                        if not isinstance(cell, MergedCell):
+                            cell.value = all_n7_data[n7_global_ptr]
+                            n7_global_ptr += 1
+                continue
+
+            # --- Logic ปกติสำหรับแถวอื่นๆ ---
             val_a = get_merged_origin_value(ws, ws.cell(row=r, column=1))
             if val_a is not None:
                 new_id = get_base_id(val_a)
@@ -103,17 +119,21 @@ def process_data(template_path, all_dim_file, lat_file):
             
             l_val = str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower()
             if "supplier" in l_val and current_id:
-                # แยกเช็คช่วง LAT (B1-B82, N7, N10)
-                is_b_lat = current_id.startswith('B') and any(str(current_id) == f"B{i}" for i in range(1, 83))
-                is_n_lat = current_id.startswith('N')
+                # ข้อยกเว้น N10: ถ้าเจอ N11 ในฟอร์ม ให้ไปดึงข้อมูล N10 มาใส่
+                target_id = "N10" if current_id == "N11" else current_id
+                
+                is_lat_range = target_id.startswith('B') and any(target_id == f"B{i}" for i in range(1, 83))
+                is_n_lat = target_id.startswith('N')
                 
                 vals = None
-                if (is_b_lat or is_n_lat) and current_id in lat_source[mode]:
-                    vals = lat_source[mode][current_id]
-                elif current_id in all_dim_master:
-                    # ใช้ Logic เดิมที่เคยดีอยู่แล้วสำหรับไอเทมอื่นๆ (เช่น B181)
-                    if current_ptr < len(all_dim_master[current_id]):
-                        vals = all_dim_master[current_id][current_ptr][mode]
+                if (is_lat_range or is_n_lat) and target_id in lat_source[mode]:
+                    data_list = lat_source[mode][target_id]
+                    if current_ptr < len(data_list):
+                        vals = data_list[current_ptr]
+                        current_ptr += 1
+                elif target_id in all_dim_master:
+                    if current_ptr < len(all_dim_master[target_id]):
+                        vals = all_dim_master[target_id][current_ptr][mode]
                         current_ptr += 1
 
                 if vals:
@@ -126,16 +146,16 @@ def process_data(template_path, all_dim_file, lat_file):
     wb.save(out_stream)
     return out_stream.getvalue()
 
-# UI (เหมือนเดิม)
-st.header("📋 Auto-Filler v18 (Original Logic Protected)")
-all_file = st.file_uploader("📂 กรุณาอัพโหลดไฟล์ All dimension", type=["xlsx"])
-lat_file = st.file_uploader("📂 กรุณาอัพไฟล์ LAT", type=["xlsx"])
+# UI
+st.header("📋 Auto-Filler v19 (N7 Continuous & N11 Redirection)")
+all_f = st.file_uploader("📂 อัพโหลดไฟล์ All dimension", type=["xlsx"])
+lat_f = st.file_uploader("📂 อัพไฟล์ LAT", type=["xlsx"])
 
-if all_file and lat_file:
+if all_f and lat_f:
     if st.button("🚀 รันการประมวลผล"):
         try:
-            res = process_data(TEMPLATE_FILENAME, all_file, lat_file)
-            st.success("✅ ประมวลผลสำเร็จ! (B181 และไอเทมอื่นใช้ Logic เดิมเรียบร้อย)")
-            st.download_button("📥 ดาวน์โหลด", res, file_name="V18_Final_Result.xlsx")
+            res = process_data(TEMPLATE_FILENAME, all_f, lat_f)
+            st.success("✅ ประมวลผลสำเร็จ! N7 กรอกต่อเนื่องแถว 1977+ และ N11 ดึงจาก N10 เรียบร้อย")
+            st.download_button("📥 ดาวน์โหลด", res, file_name="V19_Special_N_Result.xlsx")
         except Exception as e:
             st.error(f"Error: {e}")
