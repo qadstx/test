@@ -7,7 +7,7 @@ import re
 import math
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v30", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v31", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- Common Utils ---
@@ -42,80 +42,71 @@ def get_val(ws, r, c):
 
 def parse_spec(ws, r):
     try:
-        nom = float(re.findall(r"[-+]?\d*\.\d+|\d+", str(get_val(ws, r, 3)))[0])
-        tol = float(re.findall(r"[-+]?\d*\.\d+|\d+", str(get_val(ws, r, 7)))[0])
+        nom_str = str(get_val(ws, r, 3))
+        tol_str = str(get_val(ws, r, 7))
+        nom = float(re.findall(r"[-+]?\d*\.\d+|\d+", nom_str)[0])
+        tol = float(re.findall(r"[-+]?\d*\.\d+|\d+", tol_str)[0])
         return nom - tol, nom + tol
     except: return None, None
 
-# --- Main Logic ---
-def scan_lat_v30(df):
+# --- Scanners ---
+def scan_lat_v31(df):
     data = {"B_QUEUE": [], "N7_QUEUE": [], "N10_VAL": None}
-    
-    # 1. กวาด B1-B80 ตามพิกัดที่ระบุ (แถวใน pandas คือ Excel-1)
-    b_ranges = [
-        (29, 31, 1, 33),   # Row 30-32, Col B-AG
-        (83, 85, 1, 33),   # Row 84-86, Col B-AG
-        (136, 138, 1, 33), # Row 137-139, Col B-AG
-        (189, 191, 1, 25)  # Row 190-192, Col B-Y (B80 จบที่นี่)
-    ]
+    # 1. B1-B80 Horizontal Scan
+    b_ranges = [(29, 31, 1, 33), (83, 85, 1, 33), (136, 138, 1, 33), (189, 191, 1, 25)]
     for r_start, r_end, c_start, c_end in b_ranges:
         for c in range(c_start, c_end):
             if r_end < len(df) and c < df.shape[1]:
                 data["B_QUEUE"].append([clean_num(df.iloc[r_start+i, c]) for i in range(3)])
-
-    # 2. กวาด N7 ตามพิกัดเดิม
+    # 2. N7 Scan
     n7_ranges = [(295, 297, 1, 33), (348, 350, 1, 33), (401, 403, 1, 17)]
     for r_start, r_end, c_start, c_end in n7_ranges:
         for c in range(c_start, c_end):
             if r_end < len(df) and c < df.shape[1]:
                 data["N7_QUEUE"].append([clean_num(df.iloc[r_start+i, c]) for i in range(3)])
-
-    # 3. กวาด N10 (สำหรับวาง N11)
+    # 3. N10 (N11)
     if 403 < len(df):
-        # สมมติ N10 อยู่ที่ Column N (index 13) ของแถว 401-403
         data["N10_VAL"] = [clean_num(df.iloc[400+i, 13]) for i in range(3)]
-        
     return data
 
 def process_step_1(all_dim_f, lat_f):
     wb = openpyxl.load_workbook(TEMPLATE_FILENAME)
     df_all = pd.read_excel(all_dim_f, header=None)
     
-    # ดึงข้อมูลจาก All Dimension (สำหรับ B81 ขึ้นไป และ A)
+    # ดึง All Dimension (Logic เดิมที่เคยทำได้)
     all_dim_master = {}
-    c1_idx, c2_idx = 8, 16 # Default
-    for bid, row in df_all.iterrows():
-        name = get_base_id(row.iloc[0])
-        if not name: continue
-        if name not in all_dim_master: all_dim_master[name] = []
-        all_dim_master[name].append({
+    c1_idx, c2_idx = 8, 16 
+    for _, row in df_all.iterrows():
+        bid = get_base_id(row.iloc[0])
+        if not bid: continue
+        if bid not in all_dim_master: all_dim_master[bid] = []
+        all_dim_master[bid].append({
             'cav1': [clean_num(row.iloc[c1_idx+i]) for i in range(3)],
             'cav2': [clean_num(row.iloc[c2_idx+i]) for i in range(3)]
         })
 
     lat_data = {}
     for mode, sheet in [('cav1', 'LAT (Cav 1)'), ('cav2', 'LAT (Cav 2)')]:
-        try: lat_data[mode] = scan_lat_v30(pd.read_excel(lat_f, sheet_name=sheet, header=None))
+        try: lat_data[mode] = scan_lat_v31(pd.read_excel(lat_f, sheet_name=sheet, header=None))
         except: lat_data[mode] = None
 
     for sn in ["Cav 1", "Cav 2"]:
         if sn not in wb.sheetnames: continue
         ws = wb[sn]
         m = 'cav1' if sn == "Cav 1" else 'cav2'
-        if not lat_data[m]: continue
-
-        b_idx, n7_idx, curr_id, curr_ptr = 0, 0, None, 0
         
+        b_idx, n7_idx, curr_id, curr_ptr = 0, 0, None, 0
+
         for r in range(1, ws.max_row + 1):
-            # --- วาง N7 ---
+            # N7 Logic
             if 1977 <= r <= 2056:
-                if n7_idx < len(lat_data[m]["N7_QUEUE"]):
+                if lat_data[m] and n7_idx < len(lat_data[m]["N7_QUEUE"]):
                     for i, col in enumerate([13, 14, 15]):
                         get_writable_cell(ws, r, col).value = lat_data[m]["N7_QUEUE"][n7_idx][i]
                     n7_idx += 1
                 continue
 
-            # --- วาง B1-B80 และอื่นๆ ---
+            # Standard Logic (A, B, N)
             id_val = get_base_id(get_val(ws, r, 1))
             if id_val:
                 if id_val != curr_id: curr_id, curr_ptr = id_val, 0
@@ -123,28 +114,33 @@ def process_step_1(all_dim_f, lat_f):
             l_val = str(get_val(ws, r, 12)).lower()
             if "supplier" in l_val and curr_id:
                 vals = None
-                num_id = int(re.search(r'\d+', curr_id).group()) if re.search(r'\d+', curr_id) else 0
+                # แยก Logic ตามช่วง
+                match = re.search(r'\d+', curr_id)
+                num = int(match.group()) if match else 0
                 
-                if curr_id.startswith("B") and 1 <= num_id <= 80:
-                    # ใช้ Sequential Queue สำหรับ B1-B80
-                    if b_idx < len(lat_data[m]["B_QUEUE"]):
+                if curr_id.startswith("B") and 1 <= num <= 80:
+                    # B1-B80: Sequential Queue จาก LAT
+                    if lat_data[m] and b_idx < len(lat_data[m]["B_QUEUE"]):
                         vals = lat_data[m]["B_QUEUE"][b_idx]
                         b_idx += 1
                 elif curr_id == "N11":
-                    vals = lat_data[m]["N10_VAL"]
+                    # N11: N10 จาก LAT
+                    if lat_data[m]: vals = lat_data[m]["N10_VAL"]
                 else:
-                    # B81 ขึ้นไป หรือ A ให้ใช้ All Dimension logic เดิม
+                    # B81+ หรือ A: ดึงจาก All Dimension (Logic เดิม)
                     if curr_id in all_dim_master and curr_ptr < len(all_dim_master[curr_id]):
                         vals = all_dim_master[curr_id][curr_ptr][m]
                         curr_ptr += 1
                 
                 if vals:
                     for i, col in enumerate([13, 14, 15]):
-                        get_writable_cell(ws, r, col).value = vals[i]
-                        get_writable_cell(ws, r, col).number_format = '0.00000'
+                        cell = get_writable_cell(ws, r, col)
+                        cell.value = vals[i]
+                        cell.number_format = '0.00000'
 
     out = BytesIO(); wb.save(out); return out.getvalue()
 
+# (process_step_2 และ UI เหมือน V30 แต่ใช้ V31 ชื่อแทน)
 def process_step_2(raw_data):
     wb = openpyxl.load_workbook(BytesIO(raw_data))
     for sn in ["Cav 1", "Cav 2"]:
@@ -169,8 +165,7 @@ def process_step_2(raw_data):
                     cell.number_format = '0.00000'
     out = BytesIO(); wb.save(out); return out.getvalue()
 
-# --- UI ---
-st.title("Excel Auto-Filler v30 (Sequential B1-B80)")
+st.title("Excel Auto-Filler v31 (Fix B81+)")
 if st.button("🔄 Reset"):
     for k in list(st.session_state.keys()): del st.session_state[k]
     st.rerun()
@@ -180,14 +175,14 @@ lat_f = st.file_uploader("LAT", type=["xlsx"])
 
 if all_f and lat_f:
     if "raw" not in st.session_state:
-        if st.button("🚀 รอบ 1: วางข้อมูลตามพิกัด"):
+        if st.button("🚀 รอบ 1: วางข้อมูลตามเงื่อนไข"):
             st.session_state.raw = process_step_1(all_f, lat_f)
             st.rerun()
     else:
-        st.success("วางข้อมูลเรียบร้อย (B1-B80 ใช้ Sequential Queue)")
-        st.download_button("📥 โหลดไฟล์เช็คผล", st.session_state.raw, "check_v30.xlsx")
+        st.success("วางข้อมูลสำเร็จ (B1-80 พิกัดตรง / B81+ All Dimension)")
+        st.download_button("📥 โหลดไฟล์เช็คผล", st.session_state.raw, "check_v31.xlsx")
         if st.button("🪄 สุ่มให้ผ่าน Spec ทั้งหมด"):
             st.session_state.final = process_step_2(st.session_state.raw)
             st.rerun()
     if "final" in st.session_state:
-        st.download_button("📥 โหลดไฟล์ Final", st.session_state.final, "final_v30.xlsx")
+        st.download_button("📥 โหลดไฟล์ Final", st.session_state.final, "final_v31.xlsx")
