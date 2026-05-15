@@ -7,13 +7,12 @@ import re
 import math
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v27", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v28", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 def get_base_id(s):
     if pd.isna(s): return ""
     text = str(s).upper().replace(" ", "")
-    # ดึงเฉพาะตัวอักษรและตัวเลขหลัก (เช่น B41i -> B41)
     match = re.search(r'([ABTN])(\d+)', text)
     if match: return f"{match.group(1)}{match.group(2)}"
     return text
@@ -45,32 +44,44 @@ def parse_spec(ws, row):
         nominal_raw = get_merged_origin_value(ws, ws.cell(row=row, column=3))
         nominal_match = re.findall(r"[-+]?\d*\.\d+|\d+", str(nominal_raw))
         nominal = float(nominal_match[0]) if nominal_match else 0.0
-        
         tol_raw = get_merged_origin_value(ws, ws.cell(row=row, column=7))
         tol_match = re.findall(r"[-+]?\d*\.\d+|\d+", str(tol_raw))
         tol = float(tol_match[0]) if tol_match else 0.0
-        
         return nominal - tol, nominal + tol
-    except:
-        return None, None
+    except: return None, None
 
 def scan_lat_data(df):
     lat_map = {}
+    
+    # 1. จัดการ B1-B32 และอื่นๆ ที่จัดวางแบบเดิม
     sections = [
-        {'name_row': 11, 'data_start': 29}, {'name_row': 65, 'data_start': 83},
-        {'name_row': 119, 'data_start': 136}, {'name_row': 172, 'data_start': 189},
-        {'name_row': 384, 'data_start': 401}
+        {'name_row': 11, 'data_start': 29},
+        {'name_row': 384, 'data_start': 401} # N10
     ]
     for sec in sections:
         if sec['name_row'] >= len(df): continue
         names = df.iloc[sec['name_row']]
         for col_idx, raw_name in enumerate(names):
-            base_id = get_base_id(raw_name)
-            if base_id and base_id != "N7":
+            bid = get_base_id(raw_name)
+            if bid and bid not in ["N7"]:
                 d = [clean_number(df.iloc[sec['data_start']+i, col_idx]) for i in range(3)]
-                if base_id not in lat_map: lat_map[base_id] = []
-                lat_map[base_id].append(d) # เก็บทุกชุดที่เจอภายใต้ ID เดียวกัน
+                if bid not in lat_map: lat_map[bid] = []
+                lat_map[bid].append(d)
 
+    # 2. จัดการ B41-B80 แบบ Horizontal Scan (Logic เดียวกับ N7)
+    # อ้างอิงแถวที่ 66 (Header) และแถว 84, 85, 86 (Data)
+    header_row = 65
+    data_rows = [83, 84, 85]
+    if data_rows[2] < len(df):
+        headers = df.iloc[header_row]
+        for c_idx in range(1, len(headers)): # เริ่มที่ Column B
+            bid = get_base_id(headers.iloc[c_idx])
+            if bid and bid.startswith("B"):
+                d = [clean_number(df.iloc[dr, c_idx]) for dr in data_rows]
+                if bid not in lat_map: lat_map[bid] = []
+                lat_map[bid].append(d)
+
+    # 3. จัดการ N7 (Hard-coded Range)
     n7_data = []
     ranges = [(295, 298, 1, 33), (348, 351, 1, 33), (401, 404, 1, 17)]
     for r1, r3, c_start, c_end in ranges:
@@ -84,6 +95,7 @@ def process_step_1(all_dim_file, lat_file):
     wb = openpyxl.load_workbook(TEMPLATE_FILENAME)
     df_all = pd.read_excel(all_dim_file, header=None)
     
+    # Cavity Detection
     c1_idx, c2_idx = 8, 16
     for _, row in df_all.iterrows():
         idx = [i for i, v in enumerate(row) if str(v).strip() == '1']
@@ -112,57 +124,56 @@ def process_step_1(all_dim_file, lat_file):
         n7_queue = lat_source[mode].get("N7", [])
 
         for r in range(1, ws.max_row + 1):
+            # Special N7 Range
             if 1977 <= r <= 2056:
                 if n7_ptr < len(n7_queue):
                     for i, col in enumerate([13, 14, 15]):
-                        target_cell = get_writable_cell(ws, r, col)
-                        target_cell.value = n7_queue[n7_ptr][i]
-                        target_cell.number_format = '0.00000'
+                        cell = get_writable_cell(ws, r, col)
+                        cell.value = n7_queue[n7_ptr][i]
+                        cell.number_format = '0.00000'
                     n7_ptr += 1
                 continue
 
+            # Standard Items
             val_a = get_merged_origin_value(ws, ws.cell(row=r, column=1))
             if val_a:
                 new_id = get_base_id(val_a)
                 if new_id != curr_id:
                     curr_id = new_id
-                    curr_ptr = 0 # รีเซ็ตตัวนับเมื่อเปลี่ยน ID ใหม่
+                    curr_ptr = 0
             
             l_val = str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower()
             if "supplier" in l_val and curr_id:
                 target_id = "N10" if curr_id == "N11" else curr_id
-                is_b_lat = target_id.startswith('B') and any(target_id == f"B{i}" for i in range(1, 81))
                 
                 vals = None
-                # ตรวจสอบว่าในไฟล์มีข้อมูลชุด i หรือ ii (ptr 0 หรือ 1)
-                if (is_b_lat or (target_id.startswith('N') and target_id != 'N7')) and target_id in lat_source[mode]:
-                    data_list = lat_source[mode][target_id]
-                    if curr_ptr < len(data_list):
-                        vals = data_list[curr_ptr]
-                        # ไม่รีเซ็ต ptr ทันที เพราะ ID เดียวกันอาจมีหลายแถวต่อเนื่อง (i และ ii)
+                # Check LAT Source (B1-B80, N10)
+                if target_id in lat_source[mode]:
+                    if curr_ptr < len(lat_source[mode][target_id]):
+                        vals = lat_source[mode][target_id][curr_ptr]
+                # Check All Dimension
                 elif target_id in all_dim_master:
                     if curr_ptr < len(all_dim_master[target_id]):
                         vals = all_dim_master[target_id][curr_ptr][mode]
                 
                 if vals:
                     for i, col in enumerate([13, 14, 15]):
-                        target_cell = get_writable_cell(ws, r, col)
-                        target_cell.value = vals[i]
-                        target_cell.number_format = '0.00000'
-                    curr_ptr += 1 # เพิ่มตัวนับเพื่อไปดึงชุดถัดไป (เช่น i -> ii)
+                        cell = get_writable_cell(ws, r, col)
+                        cell.value = vals[i]
+                        cell.number_format = '0.00000'
+                    curr_ptr += 1
 
     out = BytesIO(); wb.save(out)
     return out.getvalue()
 
-# (process_step_2 และ UI เหมือนเดิม...)
 def process_step_2(raw_excel_data):
     wb = openpyxl.load_workbook(BytesIO(raw_excel_data))
     for sn in ["Cav 1", "Cav 2"]:
         ws = wb[sn]
         for r in range(1, ws.max_row + 1):
-            is_supplier_row = str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower() == "supplier"
-            has_data = ws.cell(row=r, column=13).value is not None
-            if has_data or is_supplier_row or (1977 <= r <= 2056):
+            is_supp = str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower() == "supplier"
+            has_val = ws.cell(row=r, column=13).value is not None
+            if has_val or is_supp or (1977 <= r <= 2056):
                 low, high = parse_spec(ws, r)
                 if low is None: continue
                 samples = [ws.cell(row=r, column=c).value for c in [13, 14, 15]]
@@ -171,39 +182,32 @@ def process_step_2(raw_excel_data):
                 for v in samples:
                     if v is None or not (low <= v <= high):
                         base = random.choice(passed) if passed else (low + high) / 2
-                        variation = (high - low) * 0.1
-                        new_val = base + random.uniform(-variation, variation)
+                        var = (high - low) * 0.1
+                        new_val = base + random.uniform(-var, var)
                         new_samples.append(max(low, min(high, new_val)))
-                    else:
-                        new_samples.append(v)
+                    else: new_samples.append(v)
                 for i, col in enumerate([13, 14, 15]):
-                    target_cell = get_writable_cell(ws, r, col)
-                    target_cell.value = math.floor(new_samples[i] * 100000) / 100000
-                    target_cell.number_format = '0.00000'
+                    cell = get_writable_cell(ws, r, col)
+                    cell.value = math.floor(new_samples[i] * 100000) / 100000
+                    cell.number_format = '0.00000'
     out = BytesIO(); wb.save(out)
     return out.getvalue()
 
-st.title("Excel Auto-Filler v27 (B41i/ii Support)")
+st.title("Excel Auto-Filler v28 (Horizontal Item Logic)")
 all_f = st.file_uploader("All dimension", type=["xlsx"])
 lat_f = st.file_uploader("LAT", type=["xlsx"])
 
 if all_f and lat_f:
     if "raw_data" not in st.session_state:
         if st.button("รันรอบที่ 1: วางข้อมูลตามจริง"):
-            try:
-                st.session_state.raw_data = process_step_1(all_f, lat_f)
-                st.rerun()
-            except Exception as e:
-                st.error(f"เกิดข้อผิดพลาด: {e}")
+            st.session_state.raw_data = process_step_1(all_f, lat_f)
+            st.rerun()
 
     if "raw_data" in st.session_state:
-        st.success("รอบที่ 1 เสร็จแล้ว! ตรวจสอบ B41 i/ii ได้เลย")
+        st.success("รอบที่ 1 เสร็จแล้ว! ตรวจสอบ B41-B80 (i, ii) ได้เลย")
         st.download_button("📥 ดาวน์โหลดไฟล์เช็คผล", st.session_state.raw_data, "step1_raw.xlsx")
         st.divider()
         if st.button("🚀 สุ่มข้อมูลให้ผ่าน Spec ทั้งหมด"):
-            try:
-                final_data = process_step_2(st.session_state.raw_data)
-                st.success("✅ แก้ไขเรียบร้อย!")
-                st.download_button("📥 ดาวน์โหลดไฟล์ Final", final_data, "step2_final.xlsx")
-            except Exception as e:
-                st.error(f"เกิดข้อผิดพลาด: {e}")
+            final = process_step_2(st.session_state.raw_data)
+            st.success("✅ แก้ไขเรียบร้อย!")
+            st.download_button("📥 ดาวน์โหลดไฟล์ Final", final, "step2_final.xlsx")
