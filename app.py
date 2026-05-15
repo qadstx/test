@@ -7,13 +7,14 @@ import re
 import math
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v26", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v27", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 def get_base_id(s):
     if pd.isna(s): return ""
     text = str(s).upper().replace(" ", "")
-    match = re.search(r'([ABTN])-?(\d+)', text)
+    # ดึงเฉพาะตัวอักษรและตัวเลขหลัก (เช่น B41i -> B41)
+    match = re.search(r'([ABTN])(\d+)', text)
     if match: return f"{match.group(1)}{match.group(2)}"
     return text
 
@@ -25,7 +26,6 @@ def clean_number(value):
     except: return value
 
 def get_writable_cell(ws, row, col):
-    """ตรวจสอบว่าเป็น Merged Cell หรือไม่ ถ้าใช่ ให้ส่งคืนเซลล์หลัก (Top-Left) เพื่อให้เขียนค่าได้"""
     cell = ws.cell(row=row, column=col)
     if isinstance(cell, MergedCell):
         for merged_range in ws.merged_cells.ranges:
@@ -69,7 +69,7 @@ def scan_lat_data(df):
             if base_id and base_id != "N7":
                 d = [clean_number(df.iloc[sec['data_start']+i, col_idx]) for i in range(3)]
                 if base_id not in lat_map: lat_map[base_id] = []
-                lat_map[base_id].append(d)
+                lat_map[base_id].append(d) # เก็บทุกชุดที่เจอภายใต้ ID เดียวกัน
 
     n7_data = []
     ranges = [(295, 298, 1, 33), (348, 351, 1, 33), (401, 404, 1, 17)]
@@ -124,7 +124,9 @@ def process_step_1(all_dim_file, lat_file):
             val_a = get_merged_origin_value(ws, ws.cell(row=r, column=1))
             if val_a:
                 new_id = get_base_id(val_a)
-                if new_id != curr_id: curr_id, curr_ptr = new_id, 0
+                if new_id != curr_id:
+                    curr_id = new_id
+                    curr_ptr = 0 # รีเซ็ตตัวนับเมื่อเปลี่ยน ID ใหม่
             
             l_val = str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower()
             if "supplier" in l_val and curr_id:
@@ -132,24 +134,27 @@ def process_step_1(all_dim_file, lat_file):
                 is_b_lat = target_id.startswith('B') and any(target_id == f"B{i}" for i in range(1, 81))
                 
                 vals = None
+                # ตรวจสอบว่าในไฟล์มีข้อมูลชุด i หรือ ii (ptr 0 หรือ 1)
                 if (is_b_lat or (target_id.startswith('N') and target_id != 'N7')) and target_id in lat_source[mode]:
-                    if curr_ptr < len(lat_source[mode][target_id]):
-                        vals = lat_source[mode][target_id][curr_ptr]
-                        curr_ptr += 1
+                    data_list = lat_source[mode][target_id]
+                    if curr_ptr < len(data_list):
+                        vals = data_list[curr_ptr]
+                        # ไม่รีเซ็ต ptr ทันที เพราะ ID เดียวกันอาจมีหลายแถวต่อเนื่อง (i และ ii)
                 elif target_id in all_dim_master:
                     if curr_ptr < len(all_dim_master[target_id]):
                         vals = all_dim_master[target_id][curr_ptr][mode]
-                        curr_ptr += 1
                 
                 if vals:
                     for i, col in enumerate([13, 14, 15]):
                         target_cell = get_writable_cell(ws, r, col)
                         target_cell.value = vals[i]
                         target_cell.number_format = '0.00000'
+                    curr_ptr += 1 # เพิ่มตัวนับเพื่อไปดึงชุดถัดไป (เช่น i -> ii)
 
     out = BytesIO(); wb.save(out)
     return out.getvalue()
 
+# (process_step_2 และ UI เหมือนเดิม...)
 def process_step_2(raw_excel_data):
     wb = openpyxl.load_workbook(BytesIO(raw_excel_data))
     for sn in ["Cav 1", "Cav 2"]:
@@ -157,16 +162,12 @@ def process_step_2(raw_excel_data):
         for r in range(1, ws.max_row + 1):
             is_supplier_row = str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower() == "supplier"
             has_data = ws.cell(row=r, column=13).value is not None
-            
-            # พิจารณาเฉพาะแถวที่ควรมีข้อมูล (รวม N7 ช่วงแถว 1977-2056)
             if has_data or is_supplier_row or (1977 <= r <= 2056):
                 low, high = parse_spec(ws, r)
                 if low is None: continue
-                
                 samples = [ws.cell(row=r, column=c).value for c in [13, 14, 15]]
                 new_samples = []
                 passed = [v for v in samples if v is not None and low <= v <= high]
-                
                 for v in samples:
                     if v is None or not (low <= v <= high):
                         base = random.choice(passed) if passed else (low + high) / 2
@@ -175,16 +176,14 @@ def process_step_2(raw_excel_data):
                         new_samples.append(max(low, min(high, new_val)))
                     else:
                         new_samples.append(v)
-                
                 for i, col in enumerate([13, 14, 15]):
                     target_cell = get_writable_cell(ws, r, col)
                     target_cell.value = math.floor(new_samples[i] * 100000) / 100000
                     target_cell.number_format = '0.00000'
-
     out = BytesIO(); wb.save(out)
     return out.getvalue()
 
-st.title("Excel Auto-Filler v26 (Fix AttributeError)")
+st.title("Excel Auto-Filler v27 (B41i/ii Support)")
 all_f = st.file_uploader("All dimension", type=["xlsx"])
 lat_f = st.file_uploader("LAT", type=["xlsx"])
 
@@ -195,16 +194,16 @@ if all_f and lat_f:
                 st.session_state.raw_data = process_step_1(all_f, lat_f)
                 st.rerun()
             except Exception as e:
-                st.error(f"เกิดข้อผิดพลาดใน Step 1: {e}")
+                st.error(f"เกิดข้อผิดพลาด: {e}")
 
     if "raw_data" in st.session_state:
-        st.success("รอบที่ 1 เสร็จแล้ว!")
+        st.success("รอบที่ 1 เสร็จแล้ว! ตรวจสอบ B41 i/ii ได้เลย")
         st.download_button("📥 ดาวน์โหลดไฟล์เช็คผล", st.session_state.raw_data, "step1_raw.xlsx")
         st.divider()
-        if st.button("🚀 ใช่, สุ่มข้อมูลให้ผ่าน Spec ทั้งหมด"):
+        if st.button("🚀 สุ่มข้อมูลให้ผ่าน Spec ทั้งหมด"):
             try:
                 final_data = process_step_2(st.session_state.raw_data)
-                st.success("✅ แก้ไขข้อมูลเรียบร้อย!")
+                st.success("✅ แก้ไขเรียบร้อย!")
                 st.download_button("📥 ดาวน์โหลดไฟล์ Final", final_data, "step2_final.xlsx")
             except Exception as e:
-                st.error(f"เกิดข้อผิดพลาดใน Step 2: {e}")
+                st.error(f"เกิดข้อผิดพลาด: {e}")
