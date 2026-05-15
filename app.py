@@ -7,7 +7,7 @@ import re
 import math
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v25", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v26", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 def get_base_id(s):
@@ -24,6 +24,15 @@ def clean_number(value):
         return math.floor(num * 100000) / 100000
     except: return value
 
+def get_writable_cell(ws, row, col):
+    """ตรวจสอบว่าเป็น Merged Cell หรือไม่ ถ้าใช่ ให้ส่งคืนเซลล์หลัก (Top-Left) เพื่อให้เขียนค่าได้"""
+    cell = ws.cell(row=row, column=col)
+    if isinstance(cell, MergedCell):
+        for merged_range in ws.merged_cells.ranges:
+            if cell.coordinate in merged_range:
+                return ws.cell(row=merged_range.min_row, column=merged_range.min_col)
+    return cell
+
 def get_merged_origin_value(ws, cell):
     if isinstance(cell, MergedCell):
         for merged_range in ws.merged_cells.ranges:
@@ -32,10 +41,8 @@ def get_merged_origin_value(ws, cell):
     return cell.value
 
 def parse_spec(ws, row):
-    """ดึงค่า Spec จากคอลัมน์ C-F และ G-J"""
     try:
         nominal_raw = get_merged_origin_value(ws, ws.cell(row=row, column=3))
-        # ดึงตัวเลขจาก nominal (เช่น R0.010 -> 0.01)
         nominal_match = re.findall(r"[-+]?\d*\.\d+|\d+", str(nominal_raw))
         nominal = float(nominal_match[0]) if nominal_match else 0.0
         
@@ -52,7 +59,7 @@ def scan_lat_data(df):
     sections = [
         {'name_row': 11, 'data_start': 29}, {'name_row': 65, 'data_start': 83},
         {'name_row': 119, 'data_start': 136}, {'name_row': 172, 'data_start': 189},
-        {'name_row': 384, 'data_start': 401} # N10
+        {'name_row': 384, 'data_start': 401}
     ]
     for sec in sections:
         if sec['name_row'] >= len(df): continue
@@ -74,11 +81,9 @@ def scan_lat_data(df):
     return lat_map
 
 def process_step_1(all_dim_file, lat_file):
-    """Step 1: วางข้อมูลตามจริงลงใน Template"""
     wb = openpyxl.load_workbook(TEMPLATE_FILENAME)
     df_all = pd.read_excel(all_dim_file, header=None)
     
-    # Cavity Mapping
     c1_idx, c2_idx = 8, 16
     for _, row in df_all.iterrows():
         idx = [i for i, v in enumerate(row) if str(v).strip() == '1']
@@ -110,8 +115,9 @@ def process_step_1(all_dim_file, lat_file):
             if 1977 <= r <= 2056:
                 if n7_ptr < len(n7_queue):
                     for i, col in enumerate([13, 14, 15]):
-                        ws.cell(row=r, column=col).value = n7_queue[n7_ptr][i]
-                        ws.cell(row=r, column=col).number_format = '0.00000'
+                        target_cell = get_writable_cell(ws, r, col)
+                        target_cell.value = n7_queue[n7_ptr][i]
+                        target_cell.number_format = '0.00000'
                     n7_ptr += 1
                 continue
 
@@ -122,7 +128,6 @@ def process_step_1(all_dim_file, lat_file):
             
             l_val = str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower()
             if "supplier" in l_val and curr_id:
-                # FIX: N11 -> ใช้ N10 จาก LAT
                 target_id = "N10" if curr_id == "N11" else curr_id
                 is_b_lat = target_id.startswith('B') and any(target_id == f"B{i}" for i in range(1, 81))
                 
@@ -138,71 +143,68 @@ def process_step_1(all_dim_file, lat_file):
                 
                 if vals:
                     for i, col in enumerate([13, 14, 15]):
-                        ws.cell(row=r, column=col).value = vals[i]
-                        ws.cell(row=r, column=col).number_format = '0.00000'
+                        target_cell = get_writable_cell(ws, r, col)
+                        target_cell.value = vals[i]
+                        target_cell.number_format = '0.00000'
 
     out = BytesIO(); wb.save(out)
     return out.getvalue()
 
 def process_step_2(raw_excel_data):
-    """Step 2: ตรวจ Spec และสุ่มค่าใหม่ให้ผ่าน"""
     wb = openpyxl.load_workbook(BytesIO(raw_excel_data))
     for sn in ["Cav 1", "Cav 2"]:
         ws = wb[sn]
         for r in range(1, ws.max_row + 1):
-            # ตรวจสอบว่าเป็นบรรทัดที่มีข้อมูลหรือควรมีข้อมูล (คอลัมน์ M, N, O)
-            if ws.cell(row=r, column=13).value is not None or \
-               (str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower() == "supplier"):
-                
+            is_supplier_row = str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower() == "supplier"
+            has_data = ws.cell(row=r, column=13).value is not None
+            
+            # พิจารณาเฉพาะแถวที่ควรมีข้อมูล (รวม N7 ช่วงแถว 1977-2056)
+            if has_data or is_supplier_row or (1977 <= r <= 2056):
                 low, high = parse_spec(ws, r)
                 if low is None: continue
                 
                 samples = [ws.cell(row=r, column=c).value for c in [13, 14, 15]]
                 new_samples = []
-                
-                # กรองค่าที่ผ่าน Spec
                 passed = [v for v in samples if v is not None and low <= v <= high]
                 
                 for v in samples:
                     if v is None or not (low <= v <= high):
-                        # สุ่มใหม่: อิงจากตัวที่ผ่าน หรือสุ่มในช่วง Spec
                         base = random.choice(passed) if passed else (low + high) / 2
-                        variation = (high - low) * 0.1 # เบี่ยงเบนไม่เกิน 10% ของช่วง Spec
+                        variation = (high - low) * 0.1
                         new_val = base + random.uniform(-variation, variation)
                         new_samples.append(max(low, min(high, new_val)))
                     else:
                         new_samples.append(v)
                 
-                # หยอดค่าที่แก้ไขแล้ว
                 for i, col in enumerate([13, 14, 15]):
-                    cell = ws.cell(row=r, column=col)
-                    cell.value = math.floor(new_samples[i] * 100000) / 100000
-                    cell.number_format = '0.00000'
+                    target_cell = get_writable_cell(ws, r, col)
+                    target_cell.value = math.floor(new_samples[i] * 100000) / 100000
+                    target_cell.number_format = '0.00000'
 
     out = BytesIO(); wb.save(out)
     return out.getvalue()
 
-# Streamlit UI
-st.title("Excel Auto-Filler v25")
+st.title("Excel Auto-Filler v26 (Fix AttributeError)")
 all_f = st.file_uploader("All dimension", type=["xlsx"])
 lat_f = st.file_uploader("LAT", type=["xlsx"])
 
 if all_f and lat_f:
     if "raw_data" not in st.session_state:
         if st.button("รันรอบที่ 1: วางข้อมูลตามจริง"):
-            st.session_state.raw_data = process_step_1(all_f, lat_f)
-            st.rerun()
+            try:
+                st.session_state.raw_data = process_step_1(all_f, lat_f)
+                st.rerun()
+            except Exception as e:
+                st.error(f"เกิดข้อผิดพลาดใน Step 1: {e}")
 
     if "raw_data" in st.session_state:
-        st.success("รอบที่ 1 เสร็จแล้ว! ตรวจสอบไฟล์ด้านล่าง")
-        st.download_button("📥 ดาวน์โหลดไฟล์เช็คผล (ยังไม่แก้ Spec)", st.session_state.raw_data, "step1_raw.xlsx")
-        
+        st.success("รอบที่ 1 เสร็จแล้ว!")
+        st.download_button("📥 ดาวน์โหลดไฟล์เช็คผล", st.session_state.raw_data, "step1_raw.xlsx")
         st.divider()
-        st.warning("ต้องการสุ่มแก้ข้อมูลให้ผ่าน Spec ทั้งหมด (รวมช่องที่ไม่มีข้อมูล) หรือไม่?")
-        if st.button("🚀 ใช่, สุ่มข้อมูลให้ผ่าน Spec และหยอดช่องว่าง"):
-            final_data = process_step_2(st.session_state.raw_data)
-            st.success("✅ สุ่มข้อมูลเรียบร้อยแล้ว!")
-            st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่าน Spec 100%)", final_data, "step2_final.xlsx")
-            if st.button("เริ่มใหม่"):
-                del st.session_state.raw_data
-                st.rerun()
+        if st.button("🚀 ใช่, สุ่มข้อมูลให้ผ่าน Spec ทั้งหมด"):
+            try:
+                final_data = process_step_2(st.session_state.raw_data)
+                st.success("✅ แก้ไขข้อมูลเรียบร้อย!")
+                st.download_button("📥 ดาวน์โหลดไฟล์ Final", final_data, "step2_final.xlsx")
+            except Exception as e:
+                st.error(f"เกิดข้อผิดพลาดใน Step 2: {e}")
