@@ -6,7 +6,7 @@ from io import BytesIO
 import re
 import math
 
-st.set_page_config(page_title="Excel Auto-Filler v20", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v21", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx" 
 
 def get_base_id(s):
@@ -17,11 +17,10 @@ def get_base_id(s):
     return text
 
 def clean_number(value):
-    """ตัดทศนิยมทิ้งที่หลักที่ 5 (ไม่ปัดเศษ) และทำให้เป็นบวก"""
+    """ตัดทศนิยมทิ้งที่หลักที่ 5 (Absolute Value)"""
     try:
         if value is None or pd.isna(value): return None
         num = abs(float(value))
-        # ใช้เทคนิคคูณ 100000 แล้วตัดเศษทิ้งก่อนหารกลับ เพื่อไม่ให้เกิดการปัดเศษ
         return math.floor(num * 100000) / 100000
     except: return value
 
@@ -49,6 +48,7 @@ def scan_lat_data(df):
         for col_idx, raw_name in enumerate(names):
             base_id = get_base_id(raw_name)
             if base_id and (base_id.startswith('B') or base_id.startswith('N')):
+                # เก็บเป็น 3 ค่าแยกกันเพื่อหยอด 3 บรรทัด
                 d1 = clean_number(df.iloc[sec['data_start'], col_idx])
                 d2 = clean_number(df.iloc[sec['data_start']+1, col_idx])
                 d3 = clean_number(df.iloc[sec['data_start']+2, col_idx])
@@ -59,7 +59,7 @@ def scan_lat_data(df):
 def process_data(template_path, all_dim_file, lat_file):
     wb = openpyxl.load_workbook(template_path)
     
-    # 1. จัดการ All Dimension (Logic V14 เดิม)
+    # 1. All Dimension
     df_all = pd.read_excel(all_dim_file, header=None)
     cav1_idx, cav2_idx = None, None
     for _, row in df_all.iterrows():
@@ -80,7 +80,7 @@ def process_data(template_path, all_dim_file, lat_file):
             'cav2': [clean_number(row.iloc[cav2_idx]), clean_number(row.iloc[cav2_idx+1]), clean_number(row.iloc[cav2_idx+2])]
         })
 
-    # 2. จัดการ LAT
+    # 2. LAT
     lat_source = {'cav1': {}, 'cav2': {}}
     if lat_file:
         for m, s in [('cav1', 'LAT (Cav 1)'), ('cav2', 'LAT (Cav 2)')]:
@@ -96,21 +96,22 @@ def process_data(template_path, all_dim_file, lat_file):
         mode = 'cav1' if sheet_name == "Cav 1" else 'cav2'
         current_id, current_ptr = None, 0
         
-        # เตรียมข้อมูล N7 ให้เป็นสายยาว 1, 2, 3, 1, 2, 3...
-        n7_stream = []
+        # สำหรับ N7: เตรียม List ข้อมูลที่จะหยอดทีละบรรทัด
+        n7_data_to_fill = []
         if 'N7' in lat_source[mode]:
             for sets in lat_source[mode]['N7']:
-                n7_stream.extend(sets)
+                # sets คือ [Sample1, Sample2, Sample3]
+                n7_data_to_fill.extend(sets)
         n7_idx = 0
 
         for r in range(1, ws.max_row + 1):
-            # --- พิเศษ N7 (แถว 1977-2056) หยอด Sample 1,2,3 ต่อเนื่อง ---
+            # --- ข้อยกเว้น N7 (1977-2056) หยอดเรียงบรรทัด Sample 1,2,3 ---
             if 1977 <= r <= 2056:
-                if n7_idx < len(n7_stream):
+                if n7_idx < len(n7_data_to_fill):
                     cell = ws.cell(row=r, column=13)
                     if not isinstance(cell, MergedCell):
-                        cell.value = n7_stream[n7_idx]
-                        cell.number_format = '0.00000' # บังคับทศนิยม 5 หลัก
+                        cell.value = n7_data_to_fill[n7_idx]
+                        cell.number_format = '0.00000'
                         n7_idx += 1
                 continue
 
@@ -123,20 +124,17 @@ def process_data(template_path, all_dim_file, lat_file):
             
             l_val = str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower()
             if "supplier" in l_val and current_id:
-                # ข้อยกเว้น N10 -> N11
                 target_id = "N10" if current_id == "N11" else current_id
                 
-                # เช็คขอบเขต B1-B80
+                # แยก B1-B80 ออกมาใช้ LAT
                 is_b_lat = target_id.startswith('B') and any(target_id == f"B{i}" for i in range(1, 81))
                 
                 vals = None
-                # ถ้าเป็น B1-B80 หรือกลุ่ม N (ยกเว้น N7 ที่ทำไปแล้ว) ให้ดู LAT
-                if (is_b_lat or target_id.startswith('N')) and target_id in lat_source[mode]:
+                if (is_b_lat or (target_id.startswith('N') and target_id != 'N7')) and target_id in lat_source[mode]:
                     data_list = lat_source[mode][target_id]
                     if current_ptr < len(data_list):
                         vals = data_list[current_ptr]
                         current_ptr += 1
-                # ถ้าเป็น B81 ขึ้นไป หรือ A, T ให้ดู All Dimension (Logic เดิม)
                 elif target_id in all_dim_master:
                     if current_ptr < len(all_dim_master[target_id]):
                         vals = all_dim_master[target_id][current_ptr][mode]
@@ -147,24 +145,24 @@ def process_data(template_path, all_dim_file, lat_file):
                         cell = ws.cell(row=r, column=col)
                         if not isinstance(cell, MergedCell):
                             cell.value = vals[i]
-                            cell.number_format = '0.00000' # บังคับโชว์ทศนิยม 5 หลัก
+                            cell.number_format = '0.00000'
 
     out_stream = BytesIO()
     wb.save(out_stream)
     return out_stream.getvalue()
 
 # UI
-st.header("📋 Auto-Filler v20 (Decimal & Logic Final Fix)")
-st.warning("Logic: B1-B80 ใช้ LAT | B81+ และอื่นๆ ใช้ All Dimension (3 Samples ครบ)")
+st.header("📋 Auto-Filler v21 (N7 3-Sample Fix)")
+st.info("แก้ไข: N7 หยอด Sample 1, 2, 3 เรียงลงมาคนละบรรทัดในช่วง 1977-2056")
 
 all_f = st.file_uploader("📂 ไฟล์ All dimension", type=["xlsx"])
 lat_f = st.file_uploader("📂 ไฟล์ LAT", type=["xlsx"])
 
 if all_f and lat_f:
-    if st.button("🚀 ประมวลผล"):
+    if st.button("🚀 ประมวลผล V21"):
         try:
             res = process_data(TEMPLATE_FILENAME, all_f, lat_f)
-            st.success("✅ สำเร็จ! ทศนิยมถูกตัดเหลือ 5 หลัก และ Logic B81 กลับมาทำงานแล้ว")
-            st.download_button("📥 ดาวน์โหลด", res, file_name="V20_Final_Standard.xlsx")
+            st.success("✅ ประมวลผลสำเร็จ! N7 หยอดแบบ 3-Sample เรียบร้อย")
+            st.download_button("📥 ดาวน์โหลด", res, file_name="V21_N7_Corrected.xlsx")
         except Exception as e:
             st.error(f"Error: {e}")
