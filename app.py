@@ -6,7 +6,7 @@ from io import BytesIO
 import re
 import os
 
-st.set_page_config(page_title="Excel Auto-Filler v17", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v18", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx" 
 
 def get_base_id(s):
@@ -23,21 +23,19 @@ def clean_number(value):
     except: return value
 
 def get_merged_origin_value(ws, cell):
-    """ฟังก์ชันช่วยอ่านค่าจากเซลล์ที่ถูก Merge (ป้องกัน Error read-only)"""
     if isinstance(cell, MergedCell):
         for merged_range in ws.merged_cells.ranges:
             if cell.coordinate in merged_range:
-                # คืนค่าจากเซลล์ซ้ายบนสุดของกลุ่มที่ Merge
                 return ws.cell(row=merged_range.min_row, column=merged_range.min_col).value
     return cell.value
 
 def scan_lat_data(df):
     lat_map = {}
     sections = [
-        {'name_row': 11, 'data_start': 29},   # B12 -> B30
-        {'name_row': 65, 'data_start': 83},   # B66 -> B84
-        {'name_row': 119, 'data_start': 136}, # B120 -> B137
-        {'name_row': 172, 'data_start': 189}, # B173 -> B190
+        {'name_row': 11, 'data_start': 29},   # B1-B32
+        {'name_row': 65, 'data_start': 83},   # B33-B52
+        {'name_row': 119, 'data_start': 136}, # B53-B68
+        {'name_row': 172, '0': 189},          # B69-B80
         {'name_row': 278, 'data_start': 295}, # N7 ชุด 1
         {'name_row': 329, 'data_start': 348}, # N7 ชุด 2
         {'name_row': 384, 'data_start': 401}  # N7/N10
@@ -50,7 +48,7 @@ def scan_lat_data(df):
             if base_id and (base_id.startswith('B') or base_id.startswith('N')):
                 data_points = []
                 for i in range(3):
-                    row_idx = sec['data_start'] + i
+                    row_idx = sec.get('data_start', 189) + i # แก้ไขพิกัดชุด 4
                     if row_idx < len(df):
                         data_points.append(clean_number(df.iloc[row_idx, col_idx]))
                 lat_map[base_id] = data_points
@@ -59,7 +57,7 @@ def scan_lat_data(df):
 def process_data(template_path, all_dim_file, lat_file):
     wb = openpyxl.load_workbook(template_path)
     
-    # 1. จัดการไฟล์ All Dimension
+    # 1. โหลดข้อมูล All Dimension (Logic เดิม)
     df_all = pd.read_excel(all_dim_file, header=None)
     cav1_idx, cav2_idx = None, None
     for _, row in df_all.iterrows():
@@ -69,24 +67,24 @@ def process_data(template_path, all_dim_file, lat_file):
             break
     if cav1_idx is None: cav1_idx, cav2_idx = 8, 16
 
-    source_master = {}
+    all_dim_master = {}
     for _, row in df_all.iterrows():
         raw_name = str(row.iloc[0]).strip()
         if not re.search(r'[ABTN]', raw_name): continue
         bid = get_base_id(raw_name)
-        if bid not in source_master: source_master[bid] = []
-        source_master[bid].append({
+        if bid not in all_dim_master: all_dim_master[bid] = []
+        all_dim_master[bid].append({
             'cav1': [clean_number(row.iloc[cav1_idx]), clean_number(row.iloc[cav1_idx+1]), clean_number(row.iloc[cav1_idx+2])],
             'cav2': [clean_number(row.iloc[cav2_idx]), clean_number(row.iloc[cav2_idx+1]), clean_number(row.iloc[cav2_idx+2])]
         })
 
-    # 2. จัดการไฟล์ LAT
+    # 2. โหลดข้อมูล LAT
     lat_source = {'cav1': {}, 'cav2': {}}
     if lat_file:
-        for m_name, s_name in [('cav1', 'LAT (Cav 1)'), ('cav2', 'LAT (Cav 2)')]:
+        for m, s in [('cav1', 'LAT (Cav 1)'), ('cav2', 'LAT (Cav 2)')]:
             try:
-                df_lat = pd.read_excel(lat_file, sheet_name=s_name, header=None)
-                lat_source[m_name] = scan_lat_data(df_lat)
+                df_lat = pd.read_excel(lat_file, sheet_name=s, header=None)
+                lat_source[m] = scan_lat_data(df_lat)
             except: continue
 
     # 3. หยอดลง Template
@@ -97,51 +95,47 @@ def process_data(template_path, all_dim_file, lat_file):
         current_id, current_ptr = None, 0
 
         for r in range(1, ws.max_row + 1):
-            cell_obj = ws.cell(row=r, column=1)
-            # ใช้ฟังก์ชันใหม่ในการอ่านค่าเพื่อเลี่ยง MergedCell Error
-            val_a = get_merged_origin_value(ws, cell_obj)
-            
+            val_a = get_merged_origin_value(ws, ws.cell(row=r, column=1))
             if val_a is not None:
                 new_id = get_base_id(val_a)
                 if new_id != current_id:
                     current_id, current_ptr = new_id, 0
             
-            # ตรวจสอบคอลัมน์ L (12)
-            l_cell = ws.cell(row=r, column=12)
-            l_val = str(get_merged_origin_value(ws, l_cell)).strip().lower()
-            
+            l_val = str(get_merged_origin_value(ws, ws.cell(row=r, column=12))).strip().lower()
             if "supplier" in l_val and current_id:
-                # ตรวจสอบว่าคอลัมน์ที่จะเขียน (M, N, O) ไม่เป็น MergedCell
-                target_cols = [13, 14, 15]
-                vals = None
+                # แยกเช็คช่วง LAT (B1-B82, N7, N10)
+                is_b_lat = current_id.startswith('B') and any(str(current_id) == f"B{i}" for i in range(1, 83))
+                is_n_lat = current_id.startswith('N')
                 
-                if current_id in lat_source[mode]:
+                vals = None
+                if (is_b_lat or is_n_lat) and current_id in lat_source[mode]:
                     vals = lat_source[mode][current_id]
-                elif current_id in source_master and current_ptr < len(source_master[current_id]):
-                    vals = source_master[current_id][current_ptr][mode]
-                    current_ptr += 1
+                elif current_id in all_dim_master:
+                    # ใช้ Logic เดิมที่เคยดีอยู่แล้วสำหรับไอเทมอื่นๆ (เช่น B181)
+                    if current_ptr < len(all_dim_master[current_id]):
+                        vals = all_dim_master[current_id][current_ptr][mode]
+                        current_ptr += 1
 
                 if vals:
-                    for i, col_num in enumerate(target_cols):
-                        target_cell = ws.cell(row=r, column=col_num)
-                        # เขียนค่าลงไปเฉพาะถ้าไม่ใช่ MergedCell หรือเป็นช่องหลัก
-                        if not isinstance(target_cell, MergedCell):
-                            target_cell.value = vals[i]
+                    for i, col in enumerate([13, 14, 15]):
+                        cell = ws.cell(row=r, column=col)
+                        if not isinstance(cell, MergedCell):
+                            cell.value = vals[i]
 
     out_stream = BytesIO()
     wb.save(out_stream)
     return out_stream.getvalue()
 
-# --- UI ---
-st.header("📋 Auto-Filler v17 (Fixed MergedCell Error)")
-all_dim_file = st.file_uploader("📂 กรุณาอัพโหลดไฟล์ All dimension", type=["xlsx"])
+# UI (เหมือนเดิม)
+st.header("📋 Auto-Filler v18 (Original Logic Protected)")
+all_file = st.file_uploader("📂 กรุณาอัพโหลดไฟล์ All dimension", type=["xlsx"])
 lat_file = st.file_uploader("📂 กรุณาอัพไฟล์ LAT", type=["xlsx"])
 
-if all_dim_file and lat_file:
+if all_file and lat_file:
     if st.button("🚀 รันการประมวลผล"):
         try:
-            result = process_data(TEMPLATE_FILENAME, all_dim_file, lat_file)
-            st.success("✅ ประมวลผลสำเร็จโดยข้ามเซลล์ที่ถูก Merge เรียบร้อย!")
-            st.download_button("📥 ดาวน์โหลด", result, file_name="Fixed_Merged_Result.xlsx")
+            res = process_data(TEMPLATE_FILENAME, all_file, lat_file)
+            st.success("✅ ประมวลผลสำเร็จ! (B181 และไอเทมอื่นใช้ Logic เดิมเรียบร้อย)")
+            st.download_button("📥 ดาวน์โหลด", res, file_name="V18_Final_Result.xlsx")
         except Exception as e:
             st.error(f"Error: {e}")
