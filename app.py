@@ -7,7 +7,7 @@ import re
 import math
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v38", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v40", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- 1. Utilities ---
@@ -40,39 +40,20 @@ def get_val(ws, r, c):
                 return ws.cell(row=merged_range.min_row, column=merged_range.min_col).value
     return cell.value
 
-def parse_spec_v3(ws, r):
-    """ ดึงค่าสเป็คแบบรองรับสูตรผูกข้ามเซลล์ (สูตร =ช่องอื่น) 
-        หากอ่านแล้วเจอสูตรพัง หรือเจอเลขแถว จะทำการ Scan ย้อนขึ้นไปหาค่าจริงให้
-    """
+def parse_spec_from_string(nom_str, tol_str):
+    """ ดึงตัวเลขสเป็คจากข้อความ ไม่ว่าจะเป็นสูตรหรือตัวเลขดิบ """
     try:
-        nom_val = get_val(ws, r, 3)
-        tol_val = get_val(ws, r, 7)
-        
-        # ถ้าระบุสูตรผูกแล้ว data_only อ่านไม่ได้ หรือดันไปดึงเลขแถวมา (ความเพี้ยนของเลข > 500)
-        # ให้ใช้วิธีไล่สแกนขึ้นไปหาแถวก่อนหน้าที่มีตัวเลขสเป็คเขียนอยู่จริง
-        curr_r = r
-        while (nom_val is None or str(nom_val).startswith("=") or (isinstance(nom_val, (int, float)) and nom_val > 500)) and curr_r > 1:
-            curr_r -= 1
-            test_nom = get_val(ws, curr_r, 3)
-            if test_nom is not None and not str(test_nom).startswith("="):
-                try:
-                    # ตรวจสอบว่าต้องเป็นสเป็คชิ้นงานจริง (ค่าไม่ควรใหญ่เว่อร์เป็นหลักพัน)
-                    v = float(re.findall(r"[-+]?\d*\.\d+|\d+", str(test_nom))[0])
-                    if v < 500: 
-                        nom_val = test_nom
-                        tol_val = get_val(ws, curr_r, 7)
-                        break
-                except: pass
-
-        nom = float(re.findall(r"[-+]?\d*\.\d+|\d+", str(nom_val))[0])
-        tol = float(re.findall(r"[-+]?\d*\.\d+|\d+", str(tol_val))[0])
+        nom = float(re.findall(r"[-+]?\d*\.\d+|\d+", str(nom_str))[0])
+        tol = float(re.findall(r"[-+]?\d*\.\d+|\d+", str(tol_str))[0])
+        # ป้องกันถ้าดึงได้เลขแถว (เช่น 1948) ให้ข้ามไป
+        if nom > 500: return None, None, None
         return nom - tol, nom + tol, nom
-    except: 
+    except:
         return None, None, None
 
-# --- 2. Step 1: Real Data Process (คงเดิมตามโครงหลักของคุณ) ---
+# --- 2. Step 1: Real Data Process ---
 def process_real_data(all_dim_file, lat_file):
-    wb = openpyxl.load_workbook(TEMPLATE_FILENAME)
+    wb = openpyxl.load_workbook(TEMPLATE_FILENAME, data_only=False) # ห้ามทำลายสูตร
     df_all = pd.read_excel(all_dim_file, header=None)
     all_dim_master = {}
     c1_idx, c2_idx = 8, 16
@@ -137,27 +118,43 @@ def process_real_data(all_dim_file, lat_file):
                         cell.value = vals[i]; cell.number_format = '0.00000'
     out = BytesIO(); wb.save(out); return out.getvalue()
 
-# --- 3. Step 2: Smart Random (เปิดโหมดอ่านค่าจากสูตร data_only=True) ---
-def process_smart_random(raw_data):
-    # บังคับเปิดแบบ data_only=True เพื่อดึงผลลัพธ์ของสูตรโคลนเซลล์ออกมาเป็นตัวเลขจริง
-    wb = openpyxl.load_workbook(BytesIO(raw_data), data_only=True)
+# --- 3. Step 2: Pure Safe Random (ไม่เปิด data_only ดึงสเป็คย้อนหลังแบบปลอดภัย) ---
+def process_safe_random(raw_data):
+    wb = openpyxl.load_workbook(BytesIO(raw_data), data_only=False) # ล็อคโหมดปิด data_only ไว้เพื่อเซฟโครงสร้างฟอร์ม
     
     for sn in ["Cav 1", "Cav 2"]:
         ws = wb[sn]
         for r in range(1, ws.max_row + 1):
             is_target = "supplier" in str(get_val(ws, r, 12)).lower() or (1977 <= r <= 2056)
             if is_target:
-                low, high, nom = parse_spec_v3(ws, r)
+                # ค้นหาข้อความ Spec ย้อนขึ้นไป (กรณีเจอสูตรผูกลิงก์ช่อง เช่น =C1948)
+                nom_str = get_val(ws, r, 3)
+                tol_str = get_val(ws, r, 7)
+                
+                curr_r = r
+                loop_cnt = 0
+                while (nom_str is None or str(nom_str).startswith("=")) and curr_r > 1 and loop_cnt < 60:
+                    curr_r -= 1
+                    loop_cnt += 1
+                    test_nom = get_val(ws, curr_r, 3)
+                    if test_nom is not None and not str(test_nom).startswith("="):
+                        nom_str = test_nom
+                        tol_str = get_val(ws, curr_r, 7)
+                        break
+                
+                low, high, nom = parse_spec_from_string(nom_str, tol_str)
                 if low is None or high is None: continue
                 
+                # อ่านและกรองข้อมูลเดิมที่มีอยู่
                 samples = []
                 for col in [13, 14, 15]:
-                    try: 
-                        v = float(get_val(ws, r, col))
-                        # ดักจับค่าหลุดสเกลเดิมออกไปก่อน
-                        if v > 500 or v < 0: samples.append(None)
+                    val = get_val(ws, r, col)
+                    try:
+                        v = float(val)
+                        if v > 500 or v < 0: samples.append(None) # ดักค่าขยะ
                         else: samples.append(v)
-                    except: samples.append(None)
+                    except:
+                        samples.append(None)
 
                 passed = [v for v in samples if v is not None and low <= v <= high]
                 
@@ -165,12 +162,13 @@ def process_smart_random(raw_data):
                 for v in samples:
                     if v is None or not (low <= v <= high):
                         base = random.choice(passed) if passed else nom
-                        diff = (high - low) * 0.05  # ควบคุมความแปรปรวน 5% ของช่วง Spec
+                        diff = (high - low) * 0.04 # คุมความแปรปรวน 4%
                         new_v = base + random.uniform(-diff, diff)
                         new_vals.append(max(low + 0.00001, min(high - 0.00001, new_v)))
                     else:
                         new_vals.append(v)
                 
+                # เขียนค่าทับกลับไปในรูปแบบตัวเลขดิบ 5 ตำแหน่ง
                 for i, col in enumerate([13, 14, 15]):
                     cell = get_writable_cell(ws, r, col)
                     cell.value = round(new_vals[i], 5)
@@ -179,22 +177,30 @@ def process_smart_random(raw_data):
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 4. UI ---
-st.title("📋 Master Auto-Filler V38 (Formula Value Fix)")
+st.title("📋 Master Auto-Filler V40 (Form Layout Locked)")
+
+if st.button("🔄 Reset ระบบ"):
+    for k in list(st.session_state.keys()): del st.session_state[k]
+    st.rerun()
+
 all_f = st.file_uploader("1. All Dimension", type=["xlsx"])
 lat_f = st.file_uploader("2. LAT", type=["xlsx"])
 
 if all_f and lat_f:
     if "raw" not in st.session_state:
         if st.button("🚀 รอบ 1: วางข้อมูลจริง"):
-            st.session_state.raw = process_real_data(all_f, lat_f)
+            with st.spinner("กำลังเขียนข้อมูล..."):
+                st.session_state.raw = process_real_data(all_f, lat_f)
             st.rerun()
     else:
-        st.info("รอบ 1 สำเร็จแล้ว! ดำเนินการขั้นต่อไปเพื่อเคลียร์ค่าที่เพี้ยนจากสูตร")
-        st.download_button("📥 โหลดไฟล์รอบ 1", st.session_state.raw, "v38_raw.xlsx")
-        if st.button("🪄 รอบ 2: แก้ไขสูตรเพี้ยน & สุ่มให้อยู่ใน Spec"):
-            st.session_state.final = process_smart_random(st.session_state.raw)
+        st.success("รอบ 1 สำเร็จแล้ว!")
+        st.download_button("📥 โหลดไฟล์ตรวจผลรอบ 1", st.session_state.raw, "v40_raw.xlsx")
+        st.divider()
+        if st.button("🪄 รอบ 2: สุ่มเติมช่องว่าง & รักษารูปแบบฟอร์มเดิม"):
+            with st.spinner("กำลังสุ่มจัดสเป็คและเซฟฟอร์มเดิม..."):
+                st.session_state.final = process_safe_random(st.session_state.raw)
             st.rerun()
             
     if "final" in st.session_state:
-        st.success("✅ แก้ไขและคำนวณสุ่มตามขอบเขต Spec จริงเรียบร้อยแล้ว!")
-        st.download_button("📥 ดาวน์โหลดไฟล์ Final", st.session_state.final, "v38_final.xlsx")
+        st.success("✅ สุ่มแก้สเป็คผ่านเรียบร้อย และฟอร์มดั้งเดิมอยู่ครบ 100%!")
+        st.download_button("📥 ดาวน์โหลดไฟล์ Final", st.session_state.final, "v40_final.xlsx")
