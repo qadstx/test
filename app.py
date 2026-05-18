@@ -7,7 +7,7 @@ import re
 import math
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v37", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v38", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- 1. Utilities ---
@@ -40,17 +40,37 @@ def get_val(ws, r, c):
                 return ws.cell(row=merged_range.min_row, column=merged_range.min_col).value
     return cell.value
 
-def parse_spec_v2(ws, r):
-    """ คืนค่า (Lower, Upper, Nominal) เพื่อใช้เป็นฐานในการสุ่มที่แม่นยำขึ้น """
+def parse_spec_v3(ws, r):
+    """ ดึงค่าสเป็คแบบรองรับสูตรผูกข้ามเซลล์ (สูตร =ช่องอื่น) 
+        หากอ่านแล้วเจอสูตรพัง หรือเจอเลขแถว จะทำการ Scan ย้อนขึ้นไปหาค่าจริงให้
+    """
     try:
-        nom_str = str(get_val(ws, r, 3))
-        tol_str = str(get_val(ws, r, 7))
-        nom = float(re.findall(r"[-+]?\d*\.\d+|\d+", nom_str)[0])
-        tol = float(re.findall(r"[-+]?\d*\.\d+|\d+", tol_str)[0])
-        return nom - tol, nom + tol, nom
-    except: return None, None, None
+        nom_val = get_val(ws, r, 3)
+        tol_val = get_val(ws, r, 7)
+        
+        # ถ้าระบุสูตรผูกแล้ว data_only อ่านไม่ได้ หรือดันไปดึงเลขแถวมา (ความเพี้ยนของเลข > 500)
+        # ให้ใช้วิธีไล่สแกนขึ้นไปหาแถวก่อนหน้าที่มีตัวเลขสเป็คเขียนอยู่จริง
+        curr_r = r
+        while (nom_val is None or str(nom_val).startswith("=") or (isinstance(nom_val, (int, float)) and nom_val > 500)) and curr_r > 1:
+            curr_r -= 1
+            test_nom = get_val(ws, curr_r, 3)
+            if test_nom is not None and not str(test_nom).startswith("="):
+                try:
+                    # ตรวจสอบว่าต้องเป็นสเป็คชิ้นงานจริง (ค่าไม่ควรใหญ่เว่อร์เป็นหลักพัน)
+                    v = float(re.findall(r"[-+]?\d*\.\d+|\d+", str(test_nom))[0])
+                    if v < 500: 
+                        nom_val = test_nom
+                        tol_val = get_val(ws, curr_r, 7)
+                        break
+                except: pass
 
-# --- 2. Step 1: Real Data Process (คงเดิมตาม V36) ---
+        nom = float(re.findall(r"[-+]?\d*\.\d+|\d+", str(nom_val))[0])
+        tol = float(re.findall(r"[-+]?\d*\.\d+|\d+", str(tol_val))[0])
+        return nom - tol, nom + tol, nom
+    except: 
+        return None, None, None
+
+# --- 2. Step 1: Real Data Process (คงเดิมตามโครงหลักของคุณ) ---
 def process_real_data(all_dim_file, lat_file):
     wb = openpyxl.load_workbook(TEMPLATE_FILENAME)
     df_all = pd.read_excel(all_dim_file, header=None)
@@ -70,7 +90,6 @@ def process_real_data(all_dim_file, lat_file):
                 'cav2': [clean_number(row.iloc[c2_idx+i]) for i in range(3)]
             })
     
-    # ดึงพิกัดจากไฟล์ LAT (B1-80, N7, N11)
     def scan_lat(df):
         d = {"B": [], "N7": [], "N10": None}
         b_c = [(29, 31, 1, 33), (83, 85, 1, 33), (136, 138, 1, 33), (189, 191, 1, 25)]
@@ -118,38 +137,37 @@ def process_real_data(all_dim_file, lat_file):
                         cell.value = vals[i]; cell.number_format = '0.00000'
     out = BytesIO(); wb.save(out); return out.getvalue()
 
-# --- 3. Step 2: Smart Random (Fix Out of Scale) ---
+# --- 3. Step 2: Smart Random (เปิดโหมดอ่านค่าจากสูตร data_only=True) ---
 def process_smart_random(raw_data):
-    wb = openpyxl.load_workbook(BytesIO(raw_data))
+    # บังคับเปิดแบบ data_only=True เพื่อดึงผลลัพธ์ของสูตรโคลนเซลล์ออกมาเป็นตัวเลขจริง
+    wb = openpyxl.load_workbook(BytesIO(raw_data), data_only=True)
+    
     for sn in ["Cav 1", "Cav 2"]:
         ws = wb[sn]
         for r in range(1, ws.max_row + 1):
             is_target = "supplier" in str(get_val(ws, r, 12)).lower() or (1977 <= r <= 2056)
             if is_target:
-                low, high, nom = parse_spec_v2(ws, r)
-                if low is None: continue
+                low, high, nom = parse_spec_v3(ws, r)
+                if low is None or high is None: continue
                 
                 samples = []
                 for col in [13, 14, 15]:
                     try: 
                         v = float(get_val(ws, r, col))
-                        # ตรวจสอบ Scale: ถ้าค่าเดิมห่างจาก Nominal เกิน 10 เท่า ถือว่าค่าผิดสเกล (เช่น 2000 ในช่อง 0.18)
-                        if abs(v) > abs(nom * 10) or abs(v) < abs(nom / 100): samples.append(None)
+                        # ดักจับค่าหลุดสเกลเดิมออกไปก่อน
+                        if v > 500 or v < 0: samples.append(None)
                         else: samples.append(v)
                     except: samples.append(None)
 
-                # กรองค่าที่ใช้เป็นฐานได้จริง
                 passed = [v for v in samples if v is not None and low <= v <= high]
                 
                 new_vals = []
                 for v in samples:
-                    # ถ้าค่าเดิมพัง, ว่าง, หรือหลุดสเป็ค ให้สุ่มใหม่โดยอิงจาก Nominal เป็นหลักหากไม่มีค่าที่ผ่านเลย
                     if v is None or not (low <= v <= high):
                         base = random.choice(passed) if passed else nom
-                        # สุ่มในช่วงแคบๆ 1-2% ของ Tolerance เพื่อความเนียน
-                        diff = (high - low) * 0.1
+                        diff = (high - low) * 0.05  # ควบคุมความแปรปรวน 5% ของช่วง Spec
                         new_v = base + random.uniform(-diff, diff)
-                        new_vals.append(max(low + (diff*0.1), min(high - (diff*0.1), new_v)))
+                        new_vals.append(max(low + 0.00001, min(high - 0.00001, new_v)))
                     else:
                         new_vals.append(v)
                 
@@ -157,10 +175,11 @@ def process_smart_random(raw_data):
                     cell = get_writable_cell(ws, r, col)
                     cell.value = round(new_vals[i], 5)
                     cell.number_format = '0.00000'
+                    
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 4. UI ---
-st.title("📋 Master Auto-Filler V37 (Smart Scale Random)")
+st.title("📋 Master Auto-Filler V38 (Formula Value Fix)")
 all_f = st.file_uploader("1. All Dimension", type=["xlsx"])
 lat_f = st.file_uploader("2. LAT", type=["xlsx"])
 
@@ -170,11 +189,12 @@ if all_f and lat_f:
             st.session_state.raw = process_real_data(all_f, lat_f)
             st.rerun()
     else:
-        st.info("รอบ 1 สำเร็จ (ตรวจเช็คค่าที่ผิดสเกลในไฟล์นี้ได้)")
-        st.download_button("📥 โหลดไฟล์รอบ 1", st.session_state.raw, "v37_raw.xlsx")
-        if st.button("🪄 รอบ 2: แก้ไขค่าผิดสเกล & สุ่มให้ผ่าน Spec"):
+        st.info("รอบ 1 สำเร็จแล้ว! ดำเนินการขั้นต่อไปเพื่อเคลียร์ค่าที่เพี้ยนจากสูตร")
+        st.download_button("📥 โหลดไฟล์รอบ 1", st.session_state.raw, "v38_raw.xlsx")
+        if st.button("🪄 รอบ 2: แก้ไขสูตรเพี้ยน & สุ่มให้อยู่ใน Spec"):
             st.session_state.final = process_smart_random(st.session_state.raw)
             st.rerun()
+            
     if "final" in st.session_state:
-        st.success("✅ แก้ไขค่าผิดสเกลและสุ่มใหม่เรียบร้อย!")
-        st.download_button("📥 ดาวน์โหลดไฟล์ Final", st.session_state.final, "v37_final.xlsx")
+        st.success("✅ แก้ไขและคำนวณสุ่มตามขอบเขต Spec จริงเรียบร้อยแล้ว!")
+        st.download_button("📥 ดาวน์โหลดไฟล์ Final", st.session_state.final, "v38_final.xlsx")
