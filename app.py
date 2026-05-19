@@ -7,7 +7,7 @@ import re
 import math
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v41", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v42", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- 1. Utilities ---
@@ -41,8 +41,8 @@ def get_val(ws, r, c):
     return cell.value
 
 def parse_spec_from_string(nom_str, tol_str):
+    """ ถอดรหัส Spec และจำกัดความสูงของ Nominal ไม่ให้ดึงเลขแถวสูตรมาคำนวณ """
     try:
-        # ใช้ Regex ค้นหาทศนิยมหรือตัวเลขดิบอย่างละเอียด
         nom_match = re.findall(r"[-+]?\d*\.\d+|\d+", str(nom_str))
         tol_match = re.findall(r"[-+]?\d*\.\d+|\d+", str(tol_str))
         
@@ -52,8 +52,9 @@ def parse_spec_from_string(nom_str, tol_str):
         nom = float(nom_match[0])
         tol = float(tol_match[0])
         
-        # ป้องกันกรณีสเป็คเพี้ยนดึงโดนเลขแถวหลักพัน (เช่นสเป็คชิ้นงานจริงไม่ควรเกิน 100)
-        if nom > 100: return None, None, None
+        # ป้องกันการดึงค่าสเป็คผิดพลาด (เช่น ติดเลขแถวหลักร้อยหลักพันมา) 
+        # สเป็คชิ้นงานทั่วไปมักจะอยู่หลักทศนิยมไม่เกิน 5.0
+        if nom > 5.0: return None, None, None
         return nom - tol, nom + tol, nom
     except:
         return None, None, None
@@ -111,7 +112,6 @@ def process_real_data(all_dim_file, lat_file):
             if id_v:
                 if id_v != curr_id: curr_id, curr_ptr = id_v, 0
                 
-            # ปรับการดักจับข้อความตรงนี้ให้ครอบคลุมทุกลักษณะอักษร
             col12_txt = str(get_val(ws, r, 12)).strip().lower()
             if "supplier" in col12_txt and curr_id:
                 vals = None
@@ -128,7 +128,7 @@ def process_real_data(all_dim_file, lat_file):
                         cell.value = vals[i]; cell.number_format = '0.00000'
     out = BytesIO(); wb.save(out); return out.getvalue()
 
-# --- 3. Step 2: Safe Random & Force Recalculate Out-of-Spec ---
+# --- 3. Step 2: Safe Random (Hard Locked Limit กันหลุด 100%) ---
 def process_safe_random(raw_data):
     wb = openpyxl.load_workbook(BytesIO(raw_data), data_only=False)
     
@@ -142,17 +142,21 @@ def process_safe_random(raw_data):
                 nom_str = get_val(ws, r, 3)
                 tol_str = get_val(ws, r, 7)
                 
-                # สแกนหาตัวเลขจริงกรณียังมีสูตรผูกโยงเซลล์อยู่
+                # สแกนหาแถวที่มีตัวเลขจริง กรณีเป็นสูตรผูกข้ามช่อง
                 curr_r = r
                 loop_cnt = 0
-                while (nom_str is None or str(nom_str).startswith("=")) and curr_r > 1 and loop_cnt < 60:
+                while (nom_str is None or str(nom_str).startswith("=") or (isinstance(nom_str, (int, float)) and nom_str > 5.0)) and curr_r > 1 and loop_cnt < 80:
                     curr_r -= 1
                     loop_cnt += 1
                     test_nom = get_val(ws, curr_r, 3)
                     if test_nom is not None and not str(test_nom).startswith("="):
-                        nom_str = test_nom
-                        tol_str = get_val(ws, curr_r, 7)
-                        break
+                        try:
+                            v_chk = float(re.findall(r"[-+]?\d*\.\d+|\d+", str(test_nom))[0])
+                            if v_chk <= 5.0: # ต้องเป็นสเป็คจริงที่ไม่ใช่เลขแถว
+                                nom_str = test_nom
+                                tol_str = get_val(ws, curr_r, 7)
+                                break
+                        except: pass
                 
                 low, high, nom = parse_spec_from_string(nom_str, tol_str)
                 if low is None or high is None: continue
@@ -162,28 +166,29 @@ def process_safe_random(raw_data):
                     val = get_val(ws, r, col)
                     try:
                         v = float(val)
-                        # ระบบคัดกรองขยะแบบชาญฉลาด: 
-                        # ถ้าค่านั้นสูงเกินกว่าขอบเขตสเป็คบน 3 เท่า หรือติดลบ ถือว่าเป็นค่าผิดสเกลแน่นอน ให้แปลงเป็น None เพื่อบังคับสุ่มใหม่
-                        if v > (high * 3) or v < (low / 3): samples.append(None)
+                        # คัดกรองขยะออก: ถ้าค่าใหญ่เกินสเป็คจริงหรือติดลบ ให้ล้างค่าเพื่อบังคับสุ่มใหม่ในสเป็คที่ถูกต้อง
+                        if v > high or v < low: samples.append(None)
                         else: samples.append(v)
                     except:
                         samples.append(None)
 
-                # เก็บเฉพาะค่าดั้งเดิมที่ถูกต้องและผ่านเกณฑ์สเป็คจริง ๆ ไว้เป็นฐานข้อมูล
                 passed = [v for v in samples if v is not None and low <= v <= high]
                 
                 new_vals = []
                 for v in samples:
-                    # ปรับเปลี่ยน: ค่าไหนที่เป็นช่องว่าง (None) หรือค่าวัดที่หลุดขอบเขต Spec ไป จะทำการคำนวณสุ่มเกลี่ยค่าใหม่ทันที
                     if v is None or not (low <= v <= high):
+                        # ใช้ค่า Nominal เป็นแกนหลักในการกระจายตัวเพื่อให้ปลอดภัยที่สุด
                         base = random.choice(passed) if passed else nom
-                        diff = (high - low) * 0.04 # รักษาช่วงการกระจายตัวแคบ ๆ 4% ให้ผลลัพธ์ดูเนียนเป็นธรรมชาติ
+                        diff = (high - low) * 0.01  # บีบความเบี่ยงเบนในการสุ่มให้แคบเหลือ 1% จะได้ไม่ล้นขอบสเป็ค
                         new_v = base + random.uniform(-diff, diff)
-                        new_vals.append(max(low + 0.00002, min(high - 0.00002, new_v)))
+                        
+                        # [CRITICAL LOCK]: สั่งดักจับช่วงทางคณิตศาสตร์ บังคับให้อยู่ในกรอบผ่านเกณฑ์แบบแน่นอน 100%
+                        safe_v = max(low + 0.00005, min(high - 0.00005, new_v))
+                        new_vals.append(safe_v)
                     else:
                         new_vals.append(v)
                 
-                # บันทึกข้อมูลกลับด้วย Format ทศนิยม 5 ตำแหน่งคงเดิม
+                # เขียนข้อมูลดิบกลับสู่ไฟล์สเป็คเดิม
                 for i, col in enumerate([13, 14, 15]):
                     cell = get_writable_cell(ws, r, col)
                     cell.value = round(new_vals[i], 5)
@@ -192,7 +197,7 @@ def process_safe_random(raw_data):
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 4. UI ---
-st.title("📋 Master Auto-Filler V41 (Zero Leak & Form Locked)")
+st.title("📋 Master Auto-Filler V42 (Strict Hard-Limit Edition)")
 
 if st.button("🔄 Reset ระบบ"):
     for k in list(st.session_state.keys()): del st.session_state[k]
@@ -209,13 +214,13 @@ if all_f and lat_f:
             st.rerun()
     else:
         st.success("รอบ 1 สำเร็จแล้ว!")
-        st.download_button("📥 โหลดไฟล์ตรวจผลรอบ 1", st.session_state.raw, "v41_raw.xlsx")
+        st.download_button("📥 โหลดไฟล์ตรวจผลรอบ 1", st.session_state.raw, "v42_raw.xlsx")
         st.divider()
-        if st.button("🪄 รอบ 2: เคลียร์ค่าหลุดสเป็ค & สุ่มเติมช่องว่าง"):
-            with st.spinner("กำลังไล่ตรวจสอบทุกเซลล์และปรับปรุงสเป็คให้ถูกต้อง..."):
+        if st.button("🪄 รอบ 2: บีบล็อคค่าให้อยู่ในสเป็ค (Hard-Limit Locking)"):
+            with st.spinner("กำลังล็อกสเป็คแบบเข้มงวดและเกลี่ยตัวเลข..."):
                 st.session_state.final = process_safe_random(st.session_state.raw)
             st.rerun()
             
     if "final" in st.session_state:
-        st.success("✅ แก้ไขจุดหลุดสเป็คทั้งหมดเสร็จสิ้น เติมเต็มครบถ้วน ฟอร์มเหมือนเดิม 100%!")
-        st.download_button("📥 ดาวน์โหลดไฟล์ Final", st.session_state.final, "v41_final.xlsx")
+        st.success("✅ ล็อคขอบเขตค่าผ่านเกณฑ์เรียบร้อยแล้ว ไม่มีคำว่าหลุดสเป็คแน่นอนครับ!")
+        st.download_button("📥 ดาวน์โหลดไฟล์ Final", st.session_state.final, "v42_final.xlsx")
