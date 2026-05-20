@@ -6,8 +6,7 @@ from io import BytesIO
 import re
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v56", layout="wide")
-TEMPLATE_FILENAME = "form_template.xlsx"
+st.set_page_config(page_title="Excel Auto-Filler v57", layout="wide")
 
 # --- 1. Utilities ---
 def get_base_id(s):
@@ -46,8 +45,8 @@ def extract_pure_number(text_val):
     return None
 
 # --- 2. Step 1: Real Data Process ---
-def process_real_data(all_dim_file, lat_file):
-    wb = openpyxl.load_workbook(TEMPLATE_FILENAME, data_only=False)
+def process_real_data(all_dim_file, lat_file, template_file, n7_start, n7_end):
+    wb = openpyxl.load_workbook(template_file, data_only=False)
     wb_lat = openpyxl.load_workbook(lat_file, data_only=True)
     
     df_all = pd.read_excel(all_dim_file, header=None)
@@ -110,7 +109,8 @@ def process_real_data(all_dim_file, lat_file):
 
         b_p, n7_p, curr_id, curr_ptr = 0, 0, None, 0
         for r in range(1, ws.max_row + 1):
-            if 1976 <= r <= 2055:
+            # 🛠️ [DYNAMIC FIXED] รันตำแหน่งแถว N7 ตามช่วงที่ส่งมาจากโมเดลที่เลือก
+            if n7_start <= r <= n7_end:
                 if lat_src[m] and n7_p < len(lat_src[m]["N7"]):
                     v = lat_src[m]["N7"][n7_p]
                     for i, c in enumerate([13, 14, 15]): 
@@ -149,7 +149,7 @@ def process_real_data(all_dim_file, lat_file):
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 3. Step 2: Safe Random ---
-def process_safe_random(raw_data):
+def process_safe_random(raw_data, n7_start, n7_end):
     wb = openpyxl.load_workbook(BytesIO(raw_data), data_only=False)
     
     for sn in ["Cav 1", "Cav 2"]:
@@ -175,11 +175,10 @@ def process_safe_random(raw_data):
 
             col12_txt = str(get_val(ws, r, 12)).strip().lower()
             
-            # 🛠️ [FIXED] แยกเงื่อนไขเป้าหมายเด็ดขาด ป้องกันการแครชวนลูปค้าง
-            is_n7_row = (1976 <= r <= 2055)
+            # 🛠️ [DYNAMIC FIXED] ล็อกเป้าหมายรอบ 2 อ้างอิงตามพิกัด N7 ของแต่ละ Model
+            is_n7_row = (n7_start <= r <= n7_end)
             is_main_dimension = curr_id and any(curr_id.startswith(p) for p in ["A", "B", "T"]) and "supplier" in col12_txt
             
-            # ยุ่งได้แค่กลุ่มหลัก (A,B,T) และ กลุ่มแถว N7 เท่านั้น!
             is_target = is_main_dimension or is_n7_row
             
             if is_target:
@@ -221,7 +220,20 @@ def process_safe_random(raw_data):
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 4. UI Layout ---
-st.title("📋 Master Auto-Filler V56 (Anti-Lock Complete Combo)")
+st.title("📋 Master Auto-Filler V57 (Multi-Model Support)")
+
+# 🛠️ ปุ่มสลับการเลือกโมเดลตั้งแต่หน้าแรก
+selected_model = st.radio("🎯 กรุณาเลือก Model ชิ้นงานก่อนเริ่มระบบ:", ["Summit", "Dorado"], horizontal=True)
+
+# กำหนด Config ปลายทางตามโมเดลชิ้นงาน
+if selected_model == "Summit":
+    template_name = "form_template_Summit.xlsx"
+    n7_start_row, n7_end_row = 1976, 2055
+else:
+    template_name = "form_template_Dorado.xlsx"
+    n7_start_row, n7_end_row = 1579, 1658
+
+st.info(f"ระบบปัจจุบัน: คอนฟิกเพื่อทำงานกับโมเดล **{selected_model}** (ใช้ไฟล์ฟอร์ม: `{template_name}` / แถว N7: `{n7_start_row}-{n7_end_row}`)")
 
 if st.button("🔄 Reset ระบบ"):
     for k in list(st.session_state.keys()): del st.session_state[k]
@@ -232,20 +244,20 @@ lat_f = st.file_uploader("2. LAT", type=["xlsx"])
 
 if all_f and lat_f:
     if "raw" not in st.session_state:
-        if st.button("🚀 รอบ 1: วางข้อมูลจริง (ตรวจเช็คค่าหลุดดิบก่อนปรับ)"):
-            with st.spinner("กำลังเขียนข้อมูลดิบลงบล็อกตาราง..."):
-                st.session_state.raw = process_real_data(all_f, lat_f)
+        if st.button(f"🚀 รอบ 1: วางข้อมูลจริง ({selected_model})"):
+            with st.spinner(f"กำลังเขียนข้อมูลดิบลงใน Template ของ {selected_model}..."):
+                st.session_state.raw = process_real_data(all_f, lat_f, template_name, n7_start_row, n7_end_row)
             st.rerun()
     else:
-        st.success("รอบ 1 สำเร็จแล้ว! ดึงกลุ่มข้อมูลหลักและพิกัด N11 มาสแตนด์บายเรียบร้อย")
-        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v56_step1_raw.xlsx")
+        st.success(f"รอบ 1 ของ {selected_model} สำเร็จแล้ว! จัดเก็บโครงสร้างตารางข้อมูลดิบเรียบร้อย")
+        st.download_button(f"📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบ {selected_model})", st.session_state.raw, f"v57_{selected_model}_step1_raw.xlsx")
         st.divider()
         
-        if st.button("🪄 รอบ 2: สุ่มเติมช่องว่าง & ปรับค่าหลุดให้เข้ากลุ่มสเป็ค"):
-            with st.spinner("กำลังเกลี่ยปรับค่าเข้าสเป็คครอบคลุมกลุ่ม A, B, T และ N7 แบบรวดเร็ว..."):
-                st.session_state.final = process_safe_random(st.session_state.raw)
+        if st.button(f"🪄 รอบ 2: สุ่มเติมช่องว่าง & ปรับค่าหลุด ({selected_model})"):
+            with st.spinner(f"กำลังคำนวณเกลี่ยปรับค่าเข้าสเป็คเฉพาะกลุ่ม A, B, T และ N7 ของ {selected_model}..."):
+                st.session_state.final = process_safe_random(st.session_state.raw, n7_start_row, n7_end_row)
             st.rerun()
             
     if "final" in st.session_state:
-        st.success("✅ ปล่อยผลรอบ 2 สำเร็จ! ปรับสเป็คกลุ่มชิ้นงาน A, B, T และ N7 เรียบร้อยไร้ที่ติครับ")
-        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v56_step2_final.xlsx")
+        st.success(f"✅ ข้อมูลของโมเดล {selected_model} ปรับสเป็คเรียบร้อยสมบูรณ์ 100% แล้วครับ!")
+        st.download_button(f"📥 ดาวน์โหลดไฟล์ Final ({selected_model})", st.session_state.final, f"v57_{selected_model}_final.xlsx")
