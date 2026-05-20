@@ -6,7 +6,7 @@ from io import BytesIO
 import re
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v54", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v55", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- 1. Utilities ---
@@ -175,11 +175,11 @@ def process_safe_random(raw_data):
 
             col12_txt = str(get_val(ws, r, 12)).strip().lower()
             
-            # 🛠️ [CRITICAL FIXED] ล็อกเป้าหมายรอบ 2: ยุ่งได้แค่กลุ่ม B และ N7 เท่านั้น! กลุ่ม N ตัวอื่นข้ามหมด
-            is_b_item = curr_id and curr_id.startswith("B")
+            # 🛠️ [CRITICAL UPDATED] ปลดล็อคให้รอบ 2 สุ่มเกลี่ยค่าครอบคลุมกลุ่มหลัก A, B, T และ แถว N7 ทั้งหมดแล้ว!
+            is_valid_dimension = curr_id and any(curr_id.startswith(prefix) for prefix in ["A", "B", "T"])
             is_n7_row = (1976 <= r <= 2055)
             
-            is_target = "supplier" in col12_txt and (is_b_item or is_n7_row)
+            is_target = "supplier" in col12_txt and (is_valid_dimension or is_n7_row)
             
             if is_target:
                 if is_n7_row:
@@ -220,7 +220,7 @@ def process_safe_random(raw_data):
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 4. UI Layout ---
-st.title("📋 Master Auto-Filler V54 (Precision Target Lockdown)")
+st.title("📋 Master Auto-Filler V55 (A, B, T & N7 Complete Combo)")
 
 if st.button("🔄 Reset ระบบ"):
     for k in list(st.session_state.keys()): del st.session_state[k]
@@ -236,15 +236,15 @@ if all_f and lat_f:
                 st.session_state.raw = process_real_data(all_f, lat_f)
             st.rerun()
     else:
-        st.success("รอบ 1 สำเร็จแล้ว! ดึงกลุ่มข้อมูล N7 และ N11 ลงพิกัดที่ถูกต้องเรียบร้อย")
-        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v54_step1_raw.xlsx")
+        st.success("รอบ 1 สำเร็จแล้ว! ดึงกลุ่มข้อมูลหลักและพิกัด N11 มาสแตนด์บายเรียบร้อย")
+        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v55_step1_raw.xlsx")
         st.divider()
         
         if st.button("🪄 รอบ 2: สุ่มเติมช่องว่าง & ปรับค่าหลุดให้เข้ากลุ่มสเป็ค"):
-            with st.spinner("กำลังเกลี่ยปรับค่าเฉพาะกลุ่ม B และ N7 (บล็อก N อื่นไม่ให้เปลี่ยนรูป)..."):
+            with st.spinner("กำลังเกลี่ยปรับค่าเข้าสเป็คครอบคลุมกลุ่ม A, B, T และ N7..."):
                 st.session_state.final = process_safe_random(st.session_state.raw)
             st.rerun()
             
     if "final" in st.session_state:
-        st.success("✅ ล็อกเป้าเกลี่ยข้อมูลสำเร็จเรียบร้อย! ข้อมูลกลุ่ม N ตัวอื่นปลอดภัย 100% แล้วครับ")
-        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v54_step2_final.xlsx")
+        st.success("✅ ปรับสเป็คกลุ่มชิ้นงาน A, B, T และ N7 สมบูรณ์แบบทั้งหมดแล้วครับ!")
+        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v55_step2_final.xlsx")
