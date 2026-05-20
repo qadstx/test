@@ -6,7 +6,7 @@ from io import BytesIO
 import re
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v47", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v48", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- 1. Utilities ---
@@ -45,7 +45,7 @@ def extract_pure_number(text_val):
     if match: return float(match.group())
     return None
 
-# --- 2. Step 1: Real Data Process (วางค่าดิบแท้ ๆ ให้เช็คผลก่อน) ---
+# --- 2. Step 1: Real Data Process (ดึงข้อมูลดิบและล็อกพิกัดทศนิยมจริง) ---
 def process_real_data(all_dim_file, lat_file):
     wb = openpyxl.load_workbook(TEMPLATE_FILENAME, data_only=False)
     df_all = pd.read_excel(all_dim_file, header=None)
@@ -76,9 +76,12 @@ def process_real_data(all_dim_file, lat_file):
             for c in range(c1, c2):
                 if r3 < len(df): d["N7"].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
                 
-        # [CONFIRMED] ดึงตรงจากพิกัด R402, R403, R404 คอลัมน์ 2 ของไฟล์ LAT ครบ 3 ช่องพอดี
+        # ⭐ [FIXED] แก้ไขดึงตรงจาก R402, R403, R404 คอลัมน์ 2 ของไฟล์ LAT (ไม่ทำลายค่าทศนิยมเดิม)
         if len(df) >= 404:
-            d["N10"] = [clean_number(df.iloc[401, 1]), clean_number(df.iloc[402, 1]), clean_number(df.iloc[403, 1])]
+            try:
+                d["N10"] = [float(df.iloc[401, 17]), float(df.iloc[402, 17]), float(df.iloc[403, 17])]
+            except:
+                d["N10"] = [clean_number(df.iloc[401, 17]), clean_number(df.iloc[402, 17]), clean_number(df.iloc[403, 17])]
         return d
 
     lat_src = {}
@@ -94,9 +97,13 @@ def process_real_data(all_dim_file, lat_file):
             if 1977 <= r <= 2056:
                 if lat_src[m] and n7_p < len(lat_src[m]["N7"]):
                     v = lat_src[m]["N7"][n7_p]
-                    for i, c in enumerate([13, 14, 15]): get_writable_cell(ws, r, c).value = v[i]
+                    for i, c in enumerate([13, 14, 15]): 
+                        cell = get_writable_cell(ws, r, c)
+                        cell.value = v[i]
+                        cell.number_format = '0.0000' if curr_id == "B81" else '0.00000'
                     n7_p += 1
                 continue
+                
             id_v = get_base_id(get_val(ws, r, 1))
             if id_v:
                 if id_v != curr_id: curr_id, curr_ptr = id_v, 0
@@ -111,30 +118,34 @@ def process_real_data(all_dim_file, lat_file):
                     if lat_src[m]: vals = lat_src[m]["N10"]
                 elif curr_id in all_dim_master and curr_ptr < len(all_dim_master[curr_id]):
                     vals = all_dim_master[curr_id][curr_ptr][m]; curr_ptr += 1
+                
                 if vals:
                     for i, c in enumerate([13, 14, 15]):
                         cell = get_writable_cell(ws, r, c)
-                        cell.value = vals[i]; cell.number_format = '0.00000'
+                        cell.value = vals[i]
+                        # ⭐ [ADDED] เงื่อนไขพิเศษ: ถ้าเป็นชิ้นงาน B81 ให้ใช้ 4 ตำแหน่ง นอกนั้นใช้ 5 ตำแหน่ง
+                        if curr_id == "B81":
+                            cell.number_format = '0.0000'
+                        else:
+                            cell.number_format = '0.00000'
     out = BytesIO(); wb.save(out); return out.getvalue()
 
-# --- 3. Step 2: Safe Random (Anti-Freeze Edition วิ่งเร็ว ไม่ค้าง ดึงสเป็คแม่นยำ) ---
+# --- 3. Step 2: Safe Random (เกลี่ยค่าหลุด โดยคงรูปแบบตำแหน่งทศนิยมแยกตามไอเทม) ---
 def process_safe_random(raw_data):
     wb = openpyxl.load_workbook(BytesIO(raw_data), data_only=False)
     
     for sn in ["Cav 1", "Cav 2"]:
         ws = wb[sn]
-        
-        # ⚡ ปรับปรุงจุดนี้: ใช้ตัวแปรเลื่อนตามตาราง เก็บค่าสเป็คปัจจุบัน (ไม่ต้องลูปย้อนกลับให้เครื่องค้าง)
-        last_known_low = None
-        last_known_high = None
-        last_known_nom = None
+        last_known_low, last_known_high, last_known_nom = None, None, None
+        curr_id = None
         
         for r in range(1, ws.max_row + 1):
-            # อ่านค่าสเป็ค Nominal (Col D) และ Tolerance (Col H) ประจำแถวปัจจุบัน
+            id_v = get_base_id(get_val(ws, r, 1))
+            if id_v: curr_id = id_v
+
             v_nom = get_val(ws, r, 4)
             v_tol = get_val(ws, r, 8)
             
-            # ถ้าเจอตัวเลขสเป็คใหม่ ให้ทำการอัปเดตตัวจำค่าทันที
             if v_nom is not None and str(v_nom).strip() != "" and not str(v_nom).startswith("="):
                 parsed_nom = extract_pure_number(v_nom)
                 if parsed_nom is not None: last_known_nom = parsed_nom
@@ -148,48 +159,42 @@ def process_safe_random(raw_data):
             is_target = "supplier" in col12_txt or (1977 <= r <= 2056)
             
             if is_target:
-                # เรียกใช้ค่าสเป็คที่จำมาจากบล็อกเซลล์ผสานล่าสุด
                 low, high, nom = last_known_low, last_known_high, last_known_nom
-                if low is None or high is None: continue # เคสป้องกันขยะหัวตาราง
+                if low is None or high is None: continue
                 
                 current_vals = []
                 for col in [13, 14, 15]:
                     val = get_val(ws, r, col)
-                    try:
-                        current_vals.append(float(val))
-                    except:
-                        current_vals.append(None)
+                    try: current_vals.append(float(val))
+                    except: current_vals.append(None)
                 
-                # คัดกรองค่าที่อยู่ในสเป็คอยู่แล้ว
                 passed_samples = [v for v in current_vals if v is not None and low <= v <= high]
-                
                 final_vals = []
                 for v in current_vals:
-                    # ถ้าช่องว่าง หรือค่าวัดทะลุหลุดสเป็คไป
                     if v is None or not (low <= v <= high):
                         base = random.choice(passed_samples) if passed_samples else nom
                         tolerance_range = high - low
-                        
-                        # สุ่มให้ค่าเกาะกลุ่มกัน ไม่เหวี่ยงกระโดด (5% ของช่วงความเผื่อ)
                         diff = tolerance_range * 0.05 if tolerance_range > 0 else 0.0001
                         new_v = base + random.uniform(-diff, diff)
-                        
-                        # ล็อกขอบเขตด้วยกฎคณิตศาสตร์อย่างเข้มงวด
                         safe_v = max(low + 0.00002, min(high - 0.00002, new_v))
                         final_vals.append(safe_v)
                     else:
                         final_vals.append(v)
                 
-                # เขียนค่ากลับลง Excel คอลัมน์ M, N, O
                 for i, col in enumerate([13, 14, 15]):
                     cell = get_writable_cell(ws, r, col)
-                    cell.value = round(final_vals[i], 5)
-                    cell.number_format = '0.00000'
+                    # ⭐ [ADDED] จัดระเบียบทศนิยมตอนบันทึกค่าในรอบเกลี่ยตามความยาวสเป็คที่ต้องการ
+                    if curr_id == "B81":
+                        cell.value = round(final_vals[i], 4)
+                        cell.number_format = '0.0000'
+                    else:
+                        cell.value = round(final_vals[i], 5)
+                        cell.number_format = '0.00000'
                     
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 4. UI Layout ---
-st.title("📋 Master Auto-Filler V47 (Anti-Freeze & Target Locked)")
+st.title("📋 Master Auto-Filler V48 ( Precision Formatting )")
 
 if st.button("🔄 Reset ระบบ"):
     for k in list(st.session_state.keys()): del st.session_state[k]
@@ -205,15 +210,15 @@ if all_f and lat_f:
                 st.session_state.raw = process_real_data(all_f, lat_f)
             st.rerun()
     else:
-        st.success("รอบ 1 สำเร็จแล้ว! คุณสามารถโหลดไฟล์นี้ไปตรวจเช็คจุดหลุดสเป็คดั้งเดิมก่อนได้เลยครับ")
-        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v47_step1_raw.xlsx")
+        st.success("รอบ 1 สำเร็จแล้ว! ตรวจสอบพิกัดความถูกต้องเรียบร้อยแล้วครับ")
+        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v48_step1_raw.xlsx")
         st.divider()
         
         if st.button("🪄 รอบ 2: สุ่มเติมช่องว่าง & ปรับค่าหลุดให้เข้ากลุ่มสเป็ค"):
-            with st.spinner("กำลังประมวลผลแก้จุดหลุดแบบความเร็วสูงพิเศษ..."):
+            with st.spinner("กำลังจัดฟอร์แมตตัวเลขและเกลี่ยค่าสเป็คแบบรวดเร็ว..."):
                 st.session_state.final = process_safe_random(st.session_state.raw)
             st.rerun()
             
     if "final" in st.session_state:
-        st.success("✅ แก้ไขและจัดกลุ่มตัวเลขให้อยู่ในสเป็คเรียบร้อยครบถ้วน ไม่มีค้างแน่นอน!")
-        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v47_step2_final.xlsx")
+        st.success("✅ บันทึกรูปแบบข้อมูล B81 (4 ตำแหน่ง) และ N11 ลงไฟล์สมบูรณ์แบบ!")
+        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v48_step2_final.xlsx")
