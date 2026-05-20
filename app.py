@@ -4,10 +4,9 @@ import openpyxl
 from openpyxl.cell.cell import MergedCell
 from io import BytesIO
 import re
-import math
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v43", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v44", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- 1. Utilities ---
@@ -41,37 +40,37 @@ def get_val(ws, r, c):
     return cell.value
 
 def extract_pure_number(text_val):
-    """ ดึงเฉพาะตัวเลขหรือทศนิยมตัวแรกที่เจอ โดยไม่สนใจอักษรหรือเครื่องหมายองศา """
     if text_val is None: return None
+    # ดักจับตัวเลขและทศนิยม (รองรับเครื่องหมาย ± และองศา)
     match = re.search(r"[-+]?\d*\.\d+|\d+", str(text_val))
-    if match:
-        return float(match.group())
+    if match: return float(match.group())
     return None
 
-def parse_spec_universal(ws, r):
-    """ ค้นหาและดึงค่าสเป็คแบบครอบจักรวาล รองรับทั้งสูตรผูกและค่าองศา """
-    nom_str = get_val(ws, r, 3)
-    tol_str = get_val(ws, r, 7)
+def parse_spec_from_row(ws, r):
+    """ อ่านสเป็คจากคอลัมน์ D (Nominal) และ คอลัมน์ H (Tolerance) โดยสแกนย้อนกลับหากเจอเซลล์ผสาน """
+    nom_val = None
+    tol_val = None
     
-    # ถ้าช่องปัจจุบันเป็นสูตรผูกหรือว่างเปล่า ให้สแกนย้อนขึ้นไปหาแถวที่มีค่าจริง
+    # 1. ค้นหาค่า Nominal ในคอลัมน์ D (คอลัมน์ที่ 4)
     curr_r = r
-    loop_cnt = 0
-    while (nom_str is None or str(nom_str).startswith("=")) and curr_r > 1 and loop_cnt < 100:
-        curr_r -= 1
-        loop_cnt += 1
-        test_nom = get_val(ws, curr_r, 3)
-        if test_nom is not None and not str(test_nom).startswith("="):
-            nom_str = test_nom
-            tol_str = get_val(ws, curr_r, 7)
+    while curr_r >= 1:
+        v = get_val(ws, curr_r, 4) # Column D
+        if v is not None and str(v).strip() != "" and not str(v).startswith("="):
+            nom_val = extract_pure_number(v)
             break
-            
-    nom = extract_pure_number(nom_str)
-    tol = extract_pure_number(tol_str)
-    
-    if nom is not None and tol is not None:
-        # ดักจับกรณีดึงโดนเลขแถวหลักพัน ให้ตีเป็นค่าใช้งานไม่ได้เพื่อป้องกันเออเร่อ
-        if nom > 1000: return None, None, None
-        return nom - tol, nom + tol, nom
+        curr_r -= 1
+
+    # 2. ค้นหาค่า Tolerance ในคอลัมน์ H (คอลัมน์ที่ 8)
+    curr_r = r
+    while curr_r >= 1:
+        v = get_val(ws, curr_r, 8) # Column H
+        if v is not None and str(v).strip() != "" and not str(v).startswith("="):
+            tol_val = extract_pure_number(v)
+            break
+        curr_r -= 1
+
+    if nom_val is not None and tol_val is not None:
+        return nom_val - tol_val, nom_val + tol_val, nom_val
     return None, None, None
 
 # --- 2. Step 1: Real Data Process (คงเดิม) ---
@@ -143,7 +142,7 @@ def process_real_data(all_dim_file, lat_file):
                         cell.value = vals[i]; cell.number_format = '0.00000'
     out = BytesIO(); wb.save(out); return out.getvalue()
 
-# --- 3. Step 2: Smart & Strict In-Spec Fixer ---
+# --- 3. Step 2: Absolute In-Spec Fixer (สุ่มเกาะกลุ่ม ไม่โดด และไม่เกินสเป็คชัวร์) ---
 def process_safe_random(raw_data):
     wb = openpyxl.load_workbook(BytesIO(raw_data), data_only=False)
     
@@ -154,10 +153,11 @@ def process_safe_random(raw_data):
             is_target = "supplier" in col12_txt or (1977 <= r <= 2056)
             
             if is_target:
-                low, high, nom = parse_spec_universal(ws, r)
-                if low is None or high is None: continue # หากหาข้อกำหนดสเป็คไม่ได้จริง ๆ ให้ข้ามไปก่อน
+                # เรียกฟังก์ชันอ่านค่าขอบเขตสเป็คต่ำสุด-สูงสุดที่แท้จริง
+                low, high, nom = parse_spec_from_row(ws, r)
+                if low is None or high is None: continue
                 
-                # ตรวจเช็คค่าดิบดั้งเดิมในช่องตรวจวัดทั้ง 3 ช่อง
+                # ตรวจเช็คค่าในช่องวัดผล คอลัมน์ M(13), N(14), O(15)
                 current_vals = []
                 for col in [13, 14, 15]:
                     val = get_val(ws, r, col)
@@ -167,28 +167,30 @@ def process_safe_random(raw_data):
                     except:
                         current_vals.append(None)
                 
-                # ค้นหาเฉพาะค่าดั้งเดิมที่ถูกต้องและผ่านเกณฑ์อยู่แล้ว เพื่อนำมาเป็นฐานข้อมูลคำนวณสุ่ม
+                # คัดกรองเฉพาะค่าเดิมที่ผ่านเกณฑ์อยู่แล้วมาใช้งาน
                 passed_samples = [v for v in current_vals if v is not None and low <= v <= high]
                 
                 final_vals = []
                 for v in current_vals:
-                    # เงื่อนไข: ถ้าช่องนั้นว่างเปล่า (None) หรือว่ามีค่าที่หลุดขอบเขต Spec ต่ำสุด-สูงสุดไป
+                    # ถ้าค่าเดิมเป็นค่าว่าง หรือค่าเดิมหลุดขอบเขตสเป็คไป (ไม่ว่าจะหลุดไปนิดเดียวหรือเป็นเลขหลักพัน)
                     if v is None or not (low <= v <= high):
-                        # เลือกใช้ค่าฐานข้อมูลที่ผ่านเกณฑ์ หรือหากไม่มีเลย ให้เลือกใช้ค่ากลาง Nominal แทน
+                        # กำหนดค่าตั้งต้น: ถ้ามีเพื่อนร่วมแถวผ่านเกณฑ์ให้ดึงมาใช้ ถ้าไม่มีเลยให้ใช้ค่ากลาง Nominal
                         base = random.choice(passed_samples) if passed_samples else nom
                         
-                        # คำนวณขอบเขตการเบี่ยงเบนสุ่มแบบแคบมาก ๆ (0.5% ของช่วงสเป็ค) เพื่อให้เกาะกลุ่มใกล้เคียงค่าเดิมที่ไม่หลุด
-                        diff = (high - low) * 0.005 if (high - low) > 0 else 0.001
+                        # กำหนดช่วงกระจายตัวแคบ ๆ (20% ของค่าความเผื่อ Tolerance เพื่อไม่ให้ค่าเหวี่ยงโดดจากกัน)
+                        tolerance_range = high - low
+                        diff = tolerance_range * 0.10 if tolerance_range > 0 else 0.0001
+                        
                         new_v = base + random.uniform(-diff, diff)
                         
-                        # [CRITICAL HARD-LOCK] บังคับสกัดค่าด้วยฟังก์ชันคณิตศาสตร์ ให้อยู่ในสเป็คปลอดภัยชัวร์ 100%
+                        # บังคับทางคณิตศาสตร์ (Hard-Lock) ป้องกันไม่ให้ตัวเลขสุ่มปัดเศษแล้วล้นขอบสเป็ค
                         safe_v = max(low + 0.00002, min(high - 0.00002, new_v))
                         final_vals.append(safe_v)
                     else:
-                        # หากค่าเดิมคำนวณมาผ่านเกณฑ์และถูกต้องอยู่แล้ว ให้คงค่าเดิมไว้ตามธรรมชาติ
+                        # ถ้าผ่านเกณฑ์ดีอยู่แล้ว ให้คงค่าเดิมไว้ตามธรรมชาติ
                         final_vals.append(v)
                 
-                # เขียนตัวเลขผลลัพธ์กลับลงไปในพิกัดเดิม
+                # เขียนค่าทับกลับลงไปพร้อมจัดรูปแบบทศนิยม 5 ตำแหน่ง
                 for i, col in enumerate([13, 14, 15]):
                     cell = get_writable_cell(ws, r, col)
                     cell.value = round(final_vals[i], 5)
@@ -197,7 +199,7 @@ def process_safe_random(raw_data):
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 4. UI ---
-st.title("📋 Master Auto-Filler V43 (Universal Spec & Hard-Lock)")
+st.title("📋 Master Auto-Filler V44 (Absolute In-Spec Locked)")
 
 if st.button("🔄 Reset ระบบ"):
     for k in list(st.session_state.keys()): del st.session_state[k]
@@ -214,13 +216,13 @@ if all_f and lat_f:
             st.rerun()
     else:
         st.success("รอบ 1 สำเร็จแล้ว!")
-        st.download_button("📥 โหลดไฟล์ตรวจผลรอบ 1", st.session_state.raw, "v43_raw.xlsx")
+        st.download_button("📥 โหลดไฟล์ตรวจผลรอบ 1", st.session_state.raw, "v44_raw.xlsx")
         st.divider()
-        if st.button("🪄 รอบ 2: ตรวจจับสเป็คองศา/สูตร & ล็อคค่าให้อยู่ในกรอบ"):
-            with st.spinner("กำลังไล่สแกนแก้องศาและสูตรผูก พร้อมจำกัดค่าให้ผ่านเกณฑ์..."):
+        if st.button("🪄 รอบ 2: บังคับแก้ไขค่าหลุดสเป็คให้อยู่ในเกณฑ์ 100%"):
+            with st.spinner("กำลังจับคู่คอลัมน์ D/H และปรับปรุงตัวเลขให้เข้าสเป็ค..."):
                 st.session_state.final = process_safe_random(st.session_state.raw)
             st.rerun()
             
     if "final" in st.session_state:
-        st.success("✅ ปรับแก้จุดหลุดสเป็คและจัดระเบียบตัวเลขเรียบร้อยแล้ว ไม่มีคำว่าเกินสเป็คแน่นอนครับ!")
-        st.download_button("📥 ดาวน์โหลดไฟล์สำเร็จ Final", st.session_state.final, "v43_final.xlsx")
+        st.success("✅ ปรับแก้จุดหลุดสเป็คทั้งหมดเรียบร้อยแล้ว! ตัวเลขเกาะกลุ่มสวยงาม ไม่โดดแน่นอนครับ")
+        st.download_button("📥 ดาวน์โหลดไฟล์ Final", st.session_state.final, "v44_final.xlsx")
