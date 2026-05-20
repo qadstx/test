@@ -6,7 +6,7 @@ from io import BytesIO
 import re
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v45", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v46", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- 1. Utilities ---
@@ -45,12 +45,31 @@ def extract_pure_number(text_val):
     if match: return float(match.group())
     return None
 
-# --- 2. Core Processing Engine (ทำรอบ 1 และ รอบ 2 ควบในครั้งเดียวเพื่อความเร็ว) ---
-def process_excel_speed_edition(all_dim_file, lat_file):
-    # โหลดครั้งเดียวทำงานจนจบ ไม่ทำลายสูตร
-    wb = openpyxl.load_workbook(TEMPLATE_FILENAME, data_only=False)
+def parse_spec_from_row(ws, r):
+    """ ค้นหาค่าสเป็ค Nominal (คอลัมน์ D) และ Tolerance (คอลัมน์ H) เพื่อนำมาคำนวณช่วงปลอดภัย """
+    nom_val = None
+    tol_val = None
     
-    # --- ส่วนที่ 1: เตรียมข้อมูลจาก All Dimension ---
+    # วนหาค่าจากแถวปัจจุบันขึ้นไปด้านบน (กรณีโดนผสานเซลล์) ขีดจำกัดสแกนสั้น ๆ เพื่อไม่ให้โปรแกรมค้าง
+    for check_r in range(r, max(0, r-30), -1):
+        v = get_val(ws, check_r, 4) # Column D
+        if v is not None and str(v).strip() != "" and not str(v).startswith("="):
+            nom_val = extract_pure_number(v)
+            break
+            
+    for check_r in range(r, max(0, r-30), -1):
+        v = get_val(ws, check_r, 8) # Column H
+        if v is not None and str(v).strip() != "" and not str(v).startswith("="):
+            tol_val = extract_pure_number(v)
+            break
+
+    if nom_val is not None and tol_val is not None:
+        return nom_val - tol_val, nom_val + tol_val, nom_val
+    return None, None, None
+
+# --- 2. Step 1: Real Data Process (ดึงค่าจริง 100% ไม่มีปรับแต่ง เพื่อให้เช็คผลดิบก่อน) ---
+def process_real_data(all_dim_file, lat_file):
+    wb = openpyxl.load_workbook(TEMPLATE_FILENAME, data_only=False)
     df_all = pd.read_excel(all_dim_file, header=None)
     all_dim_master = {}
     c1_idx, c2_idx = 8, 16
@@ -68,7 +87,6 @@ def process_excel_speed_edition(all_dim_file, lat_file):
                 'cav2': [clean_number(row.iloc[c2_idx+i]) for i in range(3)]
             })
     
-    # --- ส่วนที่ 2: เตรียมข้อมูลจาก LAT ---
     def scan_lat(df):
         d = {"B": [], "N7": [], "N10": None}
         b_c = [(29, 31, 1, 33), (83, 85, 1, 33), (136, 138, 1, 33), (189, 191, 1, 25)]
@@ -79,7 +97,10 @@ def process_excel_speed_edition(all_dim_file, lat_file):
         for r1, r3, c1, c2 in n7_c:
             for c in range(c1, c2):
                 if r3 < len(df): d["N7"].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
-        if 402 < len(df): d["N10"] = [clean_number(df.iloc[400+i, 1]) for i in range(3)]
+                
+        # [CORRECTION] ดึงจากแถว R402, R403, R404 (Index 401, 402, 403) ของไฟล์ LAT 3 ช่องพอดี
+        if len(df) >= 404:
+            d["N10"] = [clean_number(df.iloc[401, 1]), clean_number(df.iloc[402, 1]), clean_number(df.iloc[403, 1])]
         return d
 
     lat_src = {}
@@ -87,51 +108,21 @@ def process_excel_speed_edition(all_dim_file, lat_file):
         try: lat_src[m] = scan_lat(pd.read_excel(lat_file, sheet_name=s, header=None))
         except: lat_src[m] = None
 
-    # --- ส่วนที่ 3: ลุยเขียนข้อมูลลงใน Sheet แผ่นงาน ---
     for sn in ["Cav 1", "Cav 2"]:
         if sn not in wb.sheetnames: continue
-        ws = wb[sn]
-        m = 'cav1' if sn == "Cav 1" else 'cav2'
-        
+        ws, m = wb[sn], ('cav1' if sn == "Cav 1" else 'cav2')
         b_p, n7_p, curr_id, curr_ptr = 0, 0, None, 0
-        
-        # ⚡ เทคนิคความเร็ว: วนลูปเก็บข้อมูลสเป็คจากบนลงล่างใส่ Cache ไว้ล่วงหน้า
-        active_nom, active_tol = None, None
-        spec_cache = {} # เก็บค่าคู่สเป็คประจำแต่ละแถว
-        
         for r in range(1, ws.max_row + 1):
-            # อ่านค่า Nominal (Col D) และ Tolerance (Col H) เพื่ออัปเดตสเป็คปัจจุบัน
-            v_nom = get_val(ws, r, 4)
-            v_tol = get_val(ws, r, 8)
-            
-            if v_nom is not None and str(v_nom).strip() != "" and not str(v_nom).startswith("="):
-                active_nom = extract_pure_number(v_nom)
-            if v_tol is not None and str(v_tol).strip() != "" and not str(v_tol).startswith("="):
-                active_tol = extract_pure_number(v_tol)
-                
-            if active_nom is not None and active_tol is not None:
-                spec_cache[r] = (active_nom - active_tol, active_nom + active_tol, active_nom)
-
-        # วนลูปเพื่อเขียนและตรวจสอบข้อมูลสเป็คจริงด้วยความเร็วสูง
-        for r in range(1, ws.max_row + 1):
-            # 1. จัดการเขียนโซนพิเศษ LAT (แถว 1977 - 2056)
             if 1977 <= r <= 2056:
                 if lat_src[m] and n7_p < len(lat_src[m]["N7"]):
                     v = lat_src[m]["N7"][n7_p]
                     for i, c in enumerate([13, 14, 15]): get_writable_cell(ws, r, c).value = v[i]
                     n7_p += 1
-                # ตรวจเช็คสเป็คในโซนนี้ทันที
-                if r in spec_cache:
-                    low, high, nom = spec_cache[r]
-                    fix_and_lock_cell_spec(ws, r, low, high, nom)
                 continue
-                
-            # 2. จัดการดักจับ ID ชิ้นงาน (เช่น B1, T10) ในคอลัมน์ A
             id_v = get_base_id(get_val(ws, r, 1))
             if id_v:
                 if id_v != curr_id: curr_id, curr_ptr = id_v, 0
                 
-            # 3. จัดการเขียนข้อมูลดิบลงแถว Supplier
             col12_txt = str(get_val(ws, r, 12)).strip().lower()
             if "supplier" in col12_txt and curr_id:
                 vals = None
@@ -142,73 +133,91 @@ def process_excel_speed_edition(all_dim_file, lat_file):
                     if lat_src[m]: vals = lat_src[m]["N10"]
                 elif curr_id in all_dim_master and curr_ptr < len(all_dim_master[curr_id]):
                     vals = all_dim_master[curr_id][curr_ptr][m]; curr_ptr += 1
-                
                 if vals:
                     for i, c in enumerate([13, 14, 15]):
                         cell = get_writable_cell(ws, r, c)
                         cell.value = vals[i]; cell.number_format = '0.00000'
-                
-                # ⚡ เรียกใช้ Cache สเป็คความเร็วสูงตรวจสอบและแก้ไขค่าหลุดทันที
-                if r in spec_cache:
-                    low, high, nom = spec_cache[r]
-                    fix_and_lock_cell_spec(ws, r, low, high, nom)
-                    
-    out = BytesIO()
-    wb.save(out)
-    return out.getvalue()
+    out = BytesIO(); wb.save(out); return out.getvalue()
 
-def fix_and_lock_cell_spec(ws, r, low, high, nom):
-    """ ฟังก์ชันตรวจสอบค่าหลุดและบังคับแก้ให้อยู่ในสเป็คในขั้นตอนเดียว """
-    current_vals = []
-    for col in [13, 14, 15]:
-        val = get_val(ws, r, col)
-        try:
-            current_vals.append(float(val))
-        except:
-            current_vals.append(None)
-            
-    passed_samples = [v for v in current_vals if v is not None and low <= v <= high]
+# --- 3. Step 2: Safe Random (ตรวจหาจุดหลุดสเป็ค เติมช่องว่าง และเกลี่ยค่าให้อยู่ในกลุ่ม) ---
+def process_safe_random(raw_data):
+    wb = openpyxl.load_workbook(BytesIO(raw_data), data_only=False)
     
-    for i, col in enumerate([13, 14, 15]):
-        v = current_vals[i]
-        # ถ้าค่าว่าง หรือหลุดขอบเขตสเป็ค
-        if v is None or not (low <= v <= high):
-            base = random.choice(passed_samples) if passed_samples else nom
-            tolerance_range = high - low
-            diff = tolerance_range * 0.10 if tolerance_range > 0 else 0.0001
+    for sn in ["Cav 1", "Cav 2"]:
+        ws = wb[sn]
+        for r in range(1, ws.max_row + 1):
+            col12_txt = str(get_val(ws, r, 12)).strip().lower()
+            is_target = "supplier" in col12_txt or (1977 <= r <= 2056)
             
-            new_v = base + random.uniform(-diff, diff)
-            # ล็อคค่าทางคณิตศาสตร์ไม่ให้หลุดขอบสเป็คเด็ดขาด
-            safe_v = max(low + 0.00002, min(high - 0.00002, new_v))
-            
-            cell = get_writable_cell(ws, r, col)
-            cell.value = round(safe_v, 5)
-            cell.number_format = '0.00000'
+            if is_target:
+                low, high, nom = parse_spec_from_row(ws, r)
+                if low is None or high is None: continue
+                
+                current_vals = []
+                for col in [13, 14, 15]:
+                    val = get_val(ws, r, col)
+                    try:
+                        current_vals.append(float(val))
+                    except:
+                        current_vals.append(None)
+                
+                # เก็บเฉพาะค่าดั้งเดิมในแถวที่ผ่านเกณฑ์อยู่แล้ว
+                passed_samples = [v for v in current_vals if v is not None and low <= v <= high]
+                
+                final_vals = []
+                for v in current_vals:
+                    # ปรับเปลี่ยน: ถ้าช่องนั้นว่างเปล่า (None) หรือว่ามีค่าที่หลุดขอบเขต Spec ไป
+                    if v is None or not (low <= v <= high):
+                        # ใช้ค่าที่ผ่านเกณฑ์ร่วมแถว หรือถ้าหลุดยกแถวให้ใช้สเป็คกลาง Nominal ตั้งต้น
+                        base = random.choice(passed_samples) if passed_samples else nom
+                        
+                        tolerance_range = high - low
+                        # กำหนดค่าเบี่ยงเบนสุ่มแบบแคบมาก ๆ (5% ของทอเลอแรนซ์) เพื่อไม่ให้โดดจากกัน
+                        diff = tolerance_range * 0.05 if tolerance_range > 0 else 0.0001
+                        
+                        new_v = base + random.uniform(-diff, diff)
+                        
+                        # ล็อคช่วงทางคณิตศาสตร์ให้ปลอดภัย ผ่านเกณฑ์ 100%
+                        safe_v = max(low + 0.00002, min(high - 0.00002, new_v))
+                        final_vals.append(safe_v)
+                    else:
+                        # ค่าเดิมผ่านเกณฑ์และปกติอยู่แล้ว ปล่อยไว้คงเดิม
+                        final_vals.append(v)
+                
+                # เขียนค่ากลับลง Excel คอลัมน์ M, N, O
+                for i, col in enumerate([13, 14, 15]):
+                    cell = get_writable_cell(ws, r, col)
+                    cell.value = round(final_vals[i], 5)
+                    cell.number_format = '0.00000'
+                    
+    out = BytesIO(); wb.save(out); return out.getvalue()
 
-# --- 3. UI Dashboard ---
-st.title("📋 Master Auto-Filler V45 (Super Fast Turbo Edition)")
-st.subheader("ลดเวลาประมวลผลเหลือหลักวินาที และรวมกระบวนการจบในคลิกเดียว")
+# --- 4. UI Layout ---
+st.title("📋 Master Auto-Filler V46 (แยก 2 รอบ สไตล์ดั้งเดิม)")
 
-all_f = st.file_uploader("1. อัปโหลดไฟล์ All Dimension", type=["xlsx"])
-lat_f = st.file_uploader("2. อัปโหลดไฟล์ LAT", type=["xlsx"])
+if st.button("🔄 Reset ระบบ"):
+    for k in list(st.session_state.keys()): del st.session_state[k]
+    st.rerun()
+
+all_f = st.file_uploader("1. All Dimension", type=["xlsx"])
+lat_f = st.file_uploader("2. LAT", type=["xlsx"])
 
 if all_f and lat_f:
-    # ยุบเหลือปุ่มเดียว รันกระบวนการทั้งหมดรวดเดียวจบ
-    if st.button("🚀 เริ่มประมวลผลไฟล์ด่วนที่สุด (คลิกเดียวเสร็จ)"):
-        with st.spinner("⚡ ระบบกำลังคำนวณโครงสร้างสเป็คด้วยความเร็วสูง..."):
-            try:
-                final_output = process_excel_speed_edition(all_f, lat_f)
-                st.session_state.turbo_final = final_output
-                st.success("✅ ประมวลผลและล็อคค่าสเป็คทั้งหมดเสร็จสิ้นภายในไม่กี่วินาที!")
-            except Exception as e:
-                st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {str(e)}")
-                
-    if "turbo_final" in st.session_state:
+    if "raw" not in st.session_state:
+        if st.button("🚀 รอบ 1: วางข้อมูลจริง (ตรวจเช็คค่าหลุดดิบก่อนปรับ)"):
+            with st.spinner("กำลังเขียนข้อมูลดิบจากเครื่องวัด..."):
+                st.session_state.raw = process_real_data(all_f, lat_f)
+            st.rerun()
+    else:
+        st.success("รอบ 1 สำเร็จแล้ว! คุณสามารถโหลดไฟล์นี้ไปตรวจเช็คจุดหลุดสเป็คดั้งเดิมก่อนได้เลยครับ")
+        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v46_step1_raw.xlsx")
         st.divider()
-        st.subheader("📥 ดาวน์โหลดไฟล์ผลลัพธ์")
-        st.download_button(
-            label="💾 ดาวน์โหลดไฟล์ Final (สเป็คผ่าน 100% ฟอร์มไม่เพี้ยน)",
-            data=st.session_state.turbo_final,
-            file_name="v45_turbo_final.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        
+        if st.button("🪄 รอบ 2: สุ่มเติมช่องว่าง & ปรับค่าหลุดให้เข้ากลุ่มสเป็ค"):
+            with st.spinner("กำลังแก้จุดหลุดและคำนวณเกลี่ยตัวเลขให้เข้าเกณฑ์..."):
+                st.session_state.final = process_safe_random(st.session_state.raw)
+            st.rerun()
+            
+    if "final" in st.session_state:
+        st.success("✅ แก้ไขและจัดกลุ่มตัวเลขให้อยู่ในสเป็คเรียบร้อยครบถ้วน!")
+        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v46_step2_final.xlsx")
