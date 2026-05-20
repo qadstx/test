@@ -6,7 +6,7 @@ from io import BytesIO
 import re
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v51", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v52", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- 1. Utilities ---
@@ -47,7 +47,6 @@ def extract_pure_number(text_val):
 
 # --- 2. Step 1: Real Data Process ---
 def process_real_data(all_dim_file, lat_file):
-    # โหลด Workbook ฟอร์มและไฟล์ LAT ด้วย openpyxl เพื่อความแม่นยำขั้นสูงสุดในการระบุพิกัดเซลล์
     wb = openpyxl.load_workbook(TEMPLATE_FILENAME, data_only=False)
     wb_lat = openpyxl.load_workbook(lat_file, data_only=True)
     
@@ -68,7 +67,6 @@ def process_real_data(all_dim_file, lat_file):
                 'cav2': [clean_number(row.iloc[c2_idx+i]) for i in range(3)]
             })
     
-    # ฟังก์ชันดึงค่า B ดั้งเดิมจากไฟล์ LAT ผ่าน pandas df
     df_lat_cav1 = pd.read_excel(lat_file, sheet_name='LAT (Cav 1)', header=None)
     df_lat_cav2 = pd.read_excel(lat_file, sheet_name='LAT (Cav 2)', header=None)
     
@@ -90,7 +88,6 @@ def process_real_data(all_dim_file, lat_file):
         ws, m = wb[sn], ('cav1' if sn == "Cav 1" else 'cav2')
         sheet_lat_name = 'LAT (Cav 1)' if sn == "Cav 1" else 'LAT (Cav 2)'
         
-        # ⭐ [FIXED] เจาะพิกัดดึงค่าตรงจากเซลล์ R402, R403, R404 ของชีต LAT ไม่ผ่าน pandas ป้องกันค่าเพี้ยนร้อยเปอร์เซ็นต์
         n10_vals = [None, None, None]
         if sheet_lat_name in wb_lat.sheetnames:
             ws_lat_src = wb_lat[sheet_lat_name]
@@ -109,8 +106,6 @@ def process_real_data(all_dim_file, lat_file):
 
         b_p, curr_id, curr_ptr = 0, None, 0
         for r in range(1, ws.max_row + 1):
-            # ❌ [REMOVED] เอาเงื่อนไขและลูปเขียนข้อมูลช่วงแถว N7 เดิมออกทั้งหมด เพื่อไม่ให้ช่อง N อื่น ๆ โดนใส่ค่า
-            
             id_v = get_base_id(get_val(ws, r, 1))
             if id_v:
                 if id_v != curr_id: curr_id, curr_ptr = id_v, 0
@@ -122,7 +117,6 @@ def process_real_data(all_dim_file, lat_file):
                 if curr_id.startswith("B") and 1 <= num <= 80:
                     if b_p < len(b_src[m]): vals = b_src[m][b_p]; b_p += 1
                 elif curr_id == "N11":
-                    # ใส่ค่าเฉพาะไอเทม N11 เท่านั้น ไอเทมกลุ่ม N ตัวอื่น ๆ จะถูกข้ามและไม่เติมข้อมูลใด ๆ
                     vals = n10_vals
                 elif curr_id in all_dim_master and curr_ptr < len(all_dim_master[curr_id]):
                     vals = all_dim_master[curr_id][curr_ptr][m]; curr_ptr += 1
@@ -131,7 +125,8 @@ def process_real_data(all_dim_file, lat_file):
                     for i, c in enumerate([13, 14, 15]):
                         cell = get_writable_cell(ws, r, c)
                         cell.value = vals[i]
-                        if curr_id == "B81":
+                        # 🛠️ [SAFETY FIXED] ป้องกัน Error กรณีดึงข้อมูลตารางส่วนอื่นที่ไม่มี ID ชิ้นงาน
+                        if curr_id and curr_id == "B81":
                             cell.number_format = '0.0000'
                         else:
                             cell.number_format = '0.00000'
@@ -163,7 +158,6 @@ def process_safe_random(raw_data):
                     last_known_high = last_known_nom + parsed_tol
 
             col12_txt = str(get_val(ws, r, 12)).strip().lower()
-            # ให้ระบบสุ่มแก้ไขข้อมูลเฉพาะแถวที่เป็นเป้าหมาย Supplier และไม่ใช่ช่อง N ตัวอื่น ๆ
             is_target = "supplier" in col12_txt
             
             if is_target:
@@ -191,7 +185,7 @@ def process_safe_random(raw_data):
                 
                 for i, col in enumerate([13, 14, 15]):
                     cell = get_writable_cell(ws, r, col)
-                    if curr_id == "B81":
+                    if curr_id and curr_id == "B81":
                         cell.value = round(final_vals[i], 4)
                         cell.number_format = '0.0000'
                     else:
@@ -201,7 +195,7 @@ def process_safe_random(raw_data):
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 4. UI Layout ---
-st.title("📋 Master Auto-Filler V51 (N11 Standard Only)")
+st.title("📋 Master Auto-Filler V52 (Safe Complete Edition)")
 
 if st.button("🔄 Reset ระบบ"):
     for k in list(st.session_state.keys()): del st.session_state[k]
@@ -218,7 +212,7 @@ if all_f and lat_f:
             st.rerun()
     else:
         st.success("รอบ 1 สำเร็จแล้ว! ล็อกพิกัดดึงค่าตรง N11 และล้างข้อมูลช่อง N อื่นเรียบร้อย")
-        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v51_step1_raw.xlsx")
+        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v52_step1_raw.xlsx")
         st.divider()
         
         if st.button("🪄 รอบ 2: สุ่มเติมช่องว่าง & ปรับค่าหลุดให้เข้ากลุ่มสเป็ค"):
@@ -228,4 +222,4 @@ if all_f and lat_f:
             
     if "final" in st.session_state:
         st.success("✅ เสร็จสมบูรณ์! ข้อมูลถูกต้องตามเงื่อนไขทั้งหมดแล้วครับ")
-        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v51_step2_final.xlsx")
+        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v52_step2_final.xlsx")
