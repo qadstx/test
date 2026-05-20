@@ -6,7 +6,7 @@ from io import BytesIO
 import re
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v53", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v54", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- 1. Utilities ---
@@ -76,7 +76,6 @@ def process_real_data(all_dim_file, lat_file):
         for r1, r3, c1, c2 in b_c:
             for c in range(c1, c2):
                 if r3 < len(df): d["B"].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
-        # ⚡ ดึงกลุ่มข้อมูล N7 กลับมาประจำการ
         n7_c = [(295, 297, 1, 33), (348, 350, 1, 33), (401, 403, 1, 17)]
         for r1, r3, c1, c2 in n7_c:
             for c in range(c1, c2):
@@ -93,7 +92,6 @@ def process_real_data(all_dim_file, lat_file):
         ws, m = wb[sn], ('cav1' if sn == "Cav 1" else 'cav2')
         sheet_lat_name = 'LAT (Cav 1)' if sn == "Cav 1" else 'LAT (Cav 2)'
         
-        # ดึงค่าตรงพิกัด N11 จากเซลล์ R402, R403, R404 แน่นอนแม่นยำ
         n10_vals = [None, None, None]
         if sheet_lat_name in wb_lat.sheetnames:
             ws_lat_src = wb_lat[sheet_lat_name]
@@ -112,7 +110,6 @@ def process_real_data(all_dim_file, lat_file):
 
         b_p, n7_p, curr_id, curr_ptr = 0, 0, None, 0
         for r in range(1, ws.max_row + 1):
-            # 🛠️ [RESTORED] บันทึกข้อมูล N7 ลงพิกัดตารางช่วงที่ขยับขึ้นมาใหม่ (แถว 1976-2055)
             if 1976 <= r <= 2055:
                 if lat_src[m] and n7_p < len(lat_src[m]["N7"]):
                     v = lat_src[m]["N7"][n7_p]
@@ -177,12 +174,15 @@ def process_safe_random(raw_data):
                     last_known_high = last_known_nom + parsed_tol
 
             col12_txt = str(get_val(ws, r, 12)).strip().lower()
-            # ให้รอบสุ่มเกลี่ยค่าทำงานครอบคลุมทั้งแถว Supplier และ บล็อก N7 แถว 1976-2055
-            is_target = "supplier" in col12_txt or (1976 <= r <= 2055)
+            
+            # 🛠️ [CRITICAL FIXED] ล็อกเป้าหมายรอบ 2: ยุ่งได้แค่กลุ่ม B และ N7 เท่านั้น! กลุ่ม N ตัวอื่นข้ามหมด
+            is_b_item = curr_id and curr_id.startswith("B")
+            is_n7_row = (1976 <= r <= 2055)
+            
+            is_target = "supplier" in col12_txt and (is_b_item or is_n7_row)
             
             if is_target:
-                # กำหนดเซฟตี้สเป็คให้กับบล็อกตาราง N7 เพื่อไม่ให้เกิดลูปค้าง
-                if 1976 <= r <= 2055:
+                if is_n7_row:
                     low, high, nom = 0.0, 0.4, 0.05
                 else:
                     low, high, nom = last_known_low, last_known_high, last_known_nom
@@ -220,7 +220,7 @@ def process_safe_random(raw_data):
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 4. UI Layout ---
-st.title("📋 Master Auto-Filler V53 (N7 Restored Edition)")
+st.title("📋 Master Auto-Filler V54 (Precision Target Lockdown)")
 
 if st.button("🔄 Reset ระบบ"):
     for k in list(st.session_state.keys()): del st.session_state[k]
@@ -232,19 +232,19 @@ lat_f = st.file_uploader("2. LAT", type=["xlsx"])
 if all_f and lat_f:
     if "raw" not in st.session_state:
         if st.button("🚀 รอบ 1: วางข้อมูลจริง (ตรวจเช็คค่าหลุดดิบก่อนปรับ)"):
-            with st.spinner("กำลังเขียนข้อมูลดิบและดึงบล็อกตาราง N7 กลับมา..."):
+            with st.spinner("กำลังเขียนข้อมูลดิบลงบล็อกตาราง..."):
                 st.session_state.raw = process_real_data(all_f, lat_f)
             st.rerun()
     else:
         st.success("รอบ 1 สำเร็จแล้ว! ดึงกลุ่มข้อมูล N7 และ N11 ลงพิกัดที่ถูกต้องเรียบร้อย")
-        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v53_step1_raw.xlsx")
+        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v54_step1_raw.xlsx")
         st.divider()
         
         if st.button("🪄 รอบ 2: สุ่มเติมช่องว่าง & ปรับค่าหลุดให้เข้ากลุ่มสเป็ค"):
-            with st.spinner("กำลังเกลี่ยปรับค่าสเป็คของกลุ่ม B, N7 และ N11 แบบความเร็วสูง..."):
+            with st.spinner("กำลังเกลี่ยปรับค่าเฉพาะกลุ่ม B และ N7 (บล็อก N อื่นไม่ให้เปลี่ยนรูป)..."):
                 st.session_state.final = process_safe_random(st.session_state.raw)
             st.rerun()
             
     if "final" in st.session_state:
-        st.success("✅ รันครบถ้วนเสร็จสมบูรณ์! ข้อมูลจัดเรียงฟอร์แมตไร้ที่ติพร้อมดาวน์โหลดครับ")
-        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v53_step2_final.xlsx")
+        st.success("✅ ล็อกเป้าเกลี่ยข้อมูลสำเร็จเรียบร้อย! ข้อมูลกลุ่ม N ตัวอื่นปลอดภัย 100% แล้วครับ")
+        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v54_step2_final.xlsx")
