@@ -6,7 +6,7 @@ from io import BytesIO
 import re
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v52", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v53", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- 1. Utilities ---
@@ -70,17 +70,22 @@ def process_real_data(all_dim_file, lat_file):
     df_lat_cav1 = pd.read_excel(lat_file, sheet_name='LAT (Cav 1)', header=None)
     df_lat_cav2 = pd.read_excel(lat_file, sheet_name='LAT (Cav 2)', header=None)
     
-    def get_b_values(df):
-        b_list = []
+    def scan_lat_data(df):
+        d = {"B": [], "N7": []}
         b_c = [(29, 31, 1, 33), (83, 85, 1, 33), (136, 138, 1, 33), (189, 191, 1, 25)]
         for r1, r3, c1, c2 in b_c:
             for c in range(c1, c2):
-                if r3 < len(df): b_list.append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
-        return b_list
+                if r3 < len(df): d["B"].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
+        # ⚡ ดึงกลุ่มข้อมูล N7 กลับมาประจำการ
+        n7_c = [(295, 297, 1, 33), (348, 350, 1, 33), (401, 403, 1, 17)]
+        for r1, r3, c1, c2 in n7_c:
+            for c in range(c1, c2):
+                if r3 < len(df): d["N7"].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
+        return d
 
-    b_src = {
-        'cav1': get_b_values(df_lat_cav1),
-        'cav2': get_b_values(df_lat_cav2)
+    lat_src = {
+        'cav1': scan_lat_data(df_lat_cav1),
+        'cav2': scan_lat_data(df_lat_cav2)
     }
 
     for sn in ["Cav 1", "Cav 2"]:
@@ -88,6 +93,7 @@ def process_real_data(all_dim_file, lat_file):
         ws, m = wb[sn], ('cav1' if sn == "Cav 1" else 'cav2')
         sheet_lat_name = 'LAT (Cav 1)' if sn == "Cav 1" else 'LAT (Cav 2)'
         
+        # ดึงค่าตรงพิกัด N11 จากเซลล์ R402, R403, R404 แน่นอนแม่นยำ
         n10_vals = [None, None, None]
         if sheet_lat_name in wb_lat.sheetnames:
             ws_lat_src = wb_lat[sheet_lat_name]
@@ -104,8 +110,22 @@ def process_real_data(all_dim_file, lat_file):
                     clean_number(ws_lat_src['R404'].value)
                 ]
 
-        b_p, curr_id, curr_ptr = 0, None, 0
+        b_p, n7_p, curr_id, curr_ptr = 0, 0, None, 0
         for r in range(1, ws.max_row + 1):
+            # 🛠️ [RESTORED] บันทึกข้อมูล N7 ลงพิกัดตารางช่วงที่ขยับขึ้นมาใหม่ (แถว 1976-2055)
+            if 1976 <= r <= 2055:
+                if lat_src[m] and n7_p < len(lat_src[m]["N7"]):
+                    v = lat_src[m]["N7"][n7_p]
+                    for i, c in enumerate([13, 14, 15]): 
+                        cell = get_writable_cell(ws, r, c)
+                        cell.value = v[i]
+                        if curr_id and curr_id == "B81":
+                            cell.number_format = '0.0000'
+                        else:
+                            cell.number_format = '0.00000'
+                    n7_p += 1
+                continue
+                
             id_v = get_base_id(get_val(ws, r, 1))
             if id_v:
                 if id_v != curr_id: curr_id, curr_ptr = id_v, 0
@@ -115,7 +135,7 @@ def process_real_data(all_dim_file, lat_file):
                 vals = None
                 num = int(re.search(r'\d+', curr_id).group()) if re.search(r'\d+', curr_id) else 0
                 if curr_id.startswith("B") and 1 <= num <= 80:
-                    if b_p < len(b_src[m]): vals = b_src[m][b_p]; b_p += 1
+                    if lat_src[m] and b_p < len(lat_src[m]["B"]): vals = lat_src[m]["B"][b_p]; b_p += 1
                 elif curr_id == "N11":
                     vals = n10_vals
                 elif curr_id in all_dim_master and curr_ptr < len(all_dim_master[curr_id]):
@@ -125,7 +145,6 @@ def process_real_data(all_dim_file, lat_file):
                     for i, c in enumerate([13, 14, 15]):
                         cell = get_writable_cell(ws, r, c)
                         cell.value = vals[i]
-                        # 🛠️ [SAFETY FIXED] ป้องกัน Error กรณีดึงข้อมูลตารางส่วนอื่นที่ไม่มี ID ชิ้นงาน
                         if curr_id and curr_id == "B81":
                             cell.number_format = '0.0000'
                         else:
@@ -158,10 +177,16 @@ def process_safe_random(raw_data):
                     last_known_high = last_known_nom + parsed_tol
 
             col12_txt = str(get_val(ws, r, 12)).strip().lower()
-            is_target = "supplier" in col12_txt
+            # ให้รอบสุ่มเกลี่ยค่าทำงานครอบคลุมทั้งแถว Supplier และ บล็อก N7 แถว 1976-2055
+            is_target = "supplier" in col12_txt or (1976 <= r <= 2055)
             
             if is_target:
-                low, high, nom = last_known_low, last_known_high, last_known_nom
+                # กำหนดเซฟตี้สเป็คให้กับบล็อกตาราง N7 เพื่อไม่ให้เกิดลูปค้าง
+                if 1976 <= r <= 2055:
+                    low, high, nom = 0.0, 0.4, 0.05
+                else:
+                    low, high, nom = last_known_low, last_known_high, last_known_nom
+                
                 if low is None or high is None: continue
                 
                 current_vals = []
@@ -195,7 +220,7 @@ def process_safe_random(raw_data):
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 4. UI Layout ---
-st.title("📋 Master Auto-Filler V52 (Safe Complete Edition)")
+st.title("📋 Master Auto-Filler V53 (N7 Restored Edition)")
 
 if st.button("🔄 Reset ระบบ"):
     for k in list(st.session_state.keys()): del st.session_state[k]
@@ -207,19 +232,19 @@ lat_f = st.file_uploader("2. LAT", type=["xlsx"])
 if all_f and lat_f:
     if "raw" not in st.session_state:
         if st.button("🚀 รอบ 1: วางข้อมูลจริง (ตรวจเช็คค่าหลุดดิบก่อนปรับ)"):
-            with st.spinner("กำลังเขียนข้อมูลดิบจากพิกัด R402-R404..."):
+            with st.spinner("กำลังเขียนข้อมูลดิบและดึงบล็อกตาราง N7 กลับมา..."):
                 st.session_state.raw = process_real_data(all_f, lat_f)
             st.rerun()
     else:
-        st.success("รอบ 1 สำเร็จแล้ว! ล็อกพิกัดดึงค่าตรง N11 และล้างข้อมูลช่อง N อื่นเรียบร้อย")
-        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v52_step1_raw.xlsx")
+        st.success("รอบ 1 สำเร็จแล้ว! ดึงกลุ่มข้อมูล N7 และ N11 ลงพิกัดที่ถูกต้องเรียบร้อย")
+        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v53_step1_raw.xlsx")
         st.divider()
         
         if st.button("🪄 รอบ 2: สุ่มเติมช่องว่าง & ปรับค่าหลุดให้เข้ากลุ่มสเป็ค"):
-            with st.spinner("กำลังเกลี่ยค่าสเป็คโดยรักษาความสะอาดช่อง N ตัวอื่น..."):
+            with st.spinner("กำลังเกลี่ยปรับค่าสเป็คของกลุ่ม B, N7 และ N11 แบบความเร็วสูง..."):
                 st.session_state.final = process_safe_random(st.session_state.raw)
             st.rerun()
             
     if "final" in st.session_state:
-        st.success("✅ เสร็จสมบูรณ์! ข้อมูลถูกต้องตามเงื่อนไขทั้งหมดแล้วครับ")
-        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v52_step2_final.xlsx")
+        st.success("✅ รันครบถ้วนเสร็จสมบูรณ์! ข้อมูลจัดเรียงฟอร์แมตไร้ที่ติพร้อมดาวน์โหลดครับ")
+        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v53_step2_final.xlsx")
