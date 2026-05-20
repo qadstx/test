@@ -6,7 +6,7 @@ from io import BytesIO
 import re
 import random
 
-st.set_page_config(page_title="Excel Auto-Filler v48", layout="wide")
+st.set_page_config(page_title="Excel Auto-Filler v50", layout="wide")
 TEMPLATE_FILENAME = "form_template.xlsx"
 
 # --- 1. Utilities ---
@@ -45,7 +45,7 @@ def extract_pure_number(text_val):
     if match: return float(match.group())
     return None
 
-# --- 2. Step 1: Real Data Process (ดึงข้อมูลดิบและล็อกพิกัดทศนิยมจริง) ---
+# --- 2. Step 1: Real Data Process ---
 def process_real_data(all_dim_file, lat_file):
     wb = openpyxl.load_workbook(TEMPLATE_FILENAME, data_only=False)
     df_all = pd.read_excel(all_dim_file, header=None)
@@ -76,7 +76,7 @@ def process_real_data(all_dim_file, lat_file):
             for c in range(c1, c2):
                 if r3 < len(df): d["N7"].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
                 
-        # ⭐ [FIXED] แก้ไขดึงตรงจาก R402, R403, R404 คอลัมน์ 2 ของไฟล์ LAT (ไม่ทำลายค่าทศนิยมเดิม)
+        # ดึงจากพิกัด R402, R403, R404 คอลัมน์ R (Index 17 ใน pandas) ของไฟล์ LAT
         if len(df) >= 404:
             try:
                 d["N10"] = [float(df.iloc[401, 17]), float(df.iloc[402, 17]), float(df.iloc[403, 17])]
@@ -94,7 +94,8 @@ def process_real_data(all_dim_file, lat_file):
         ws, m = wb[sn], ('cav1' if sn == "Cav 1" else 'cav2')
         b_p, n7_p, curr_id, curr_ptr = 0, 0, None, 0
         for r in range(1, ws.max_row + 1):
-            if 1977 <= r <= 2056:
+            # จัดตำแหน่งตาราง N7 ขยับขึ้น 1 แถว (1976-2055)
+            if 1976 <= r <= 2055:
                 if lat_src[m] and n7_p < len(lat_src[m]["N7"]):
                     v = lat_src[m]["N7"][n7_p]
                     for i, c in enumerate([13, 14, 15]): 
@@ -123,14 +124,13 @@ def process_real_data(all_dim_file, lat_file):
                     for i, c in enumerate([13, 14, 15]):
                         cell = get_writable_cell(ws, r, c)
                         cell.value = vals[i]
-                        # ⭐ [ADDED] เงื่อนไขพิเศษ: ถ้าเป็นชิ้นงาน B81 ให้ใช้ 4 ตำแหน่ง นอกนั้นใช้ 5 ตำแหน่ง
                         if curr_id == "B81":
                             cell.number_format = '0.0000'
                         else:
                             cell.number_format = '0.00000'
     out = BytesIO(); wb.save(out); return out.getvalue()
 
-# --- 3. Step 2: Safe Random (เกลี่ยค่าหลุด โดยคงรูปแบบตำแหน่งทศนิยมแยกตามไอเทม) ---
+# --- 3. Step 2: Safe Random ---
 def process_safe_random(raw_data):
     wb = openpyxl.load_workbook(BytesIO(raw_data), data_only=False)
     
@@ -156,10 +156,15 @@ def process_safe_random(raw_data):
                     last_known_high = last_known_nom + parsed_tol
 
             col12_txt = str(get_val(ws, r, 12)).strip().lower()
-            is_target = "supplier" in col12_txt or (1977 <= r <= 2056)
+            is_target = "supplier" in col12_txt or (1976 <= r <= 2055)
             
             if is_target:
-                low, high, nom = last_known_low, last_known_high, last_known_nom
+                # ⭐ [FIXED] แก้ไขจุดเครื่องค้าง: ล็อกสเป็คให้ช่วงแถว N7 (Roughness) โดยตรงเพื่อไม่ให้ค่าหลุดเป็น None
+                if 1976 <= r <= 2055:
+                    low, high, nom = 0.0, 0.4, 0.05
+                else:
+                    low, high, nom = last_known_low, last_known_high, last_known_nom
+                
                 if low is None or high is None: continue
                 
                 current_vals = []
@@ -183,7 +188,6 @@ def process_safe_random(raw_data):
                 
                 for i, col in enumerate([13, 14, 15]):
                     cell = get_writable_cell(ws, r, col)
-                    # ⭐ [ADDED] จัดระเบียบทศนิยมตอนบันทึกค่าในรอบเกลี่ยตามความยาวสเป็คที่ต้องการ
                     if curr_id == "B81":
                         cell.value = round(final_vals[i], 4)
                         cell.number_format = '0.0000'
@@ -194,7 +198,7 @@ def process_safe_random(raw_data):
     out = BytesIO(); wb.save(out); return out.getvalue()
 
 # --- 4. UI Layout ---
-st.title("📋 Master Auto-Filler V48 ( Precision Formatting )")
+st.title("📋 Master Auto-Filler V50 (Anti-Freeze Complete Edition)")
 
 if st.button("🔄 Reset ระบบ"):
     for k in list(st.session_state.keys()): del st.session_state[k]
@@ -206,19 +210,19 @@ lat_f = st.file_uploader("2. LAT", type=["xlsx"])
 if all_f and lat_f:
     if "raw" not in st.session_state:
         if st.button("🚀 รอบ 1: วางข้อมูลจริง (ตรวจเช็คค่าหลุดดิบก่อนปรับ)"):
-            with st.spinner("กำลังเขียนข้อมูลดิบและพิกัด N11 ใหม่..."):
+            with st.spinner("กำลังเขียนข้อมูลดิบลงบล็อกตาราง..."):
                 st.session_state.raw = process_real_data(all_f, lat_f)
             st.rerun()
     else:
         st.success("รอบ 1 สำเร็จแล้ว! ตรวจสอบพิกัดความถูกต้องเรียบร้อยแล้วครับ")
-        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v48_step1_raw.xlsx")
+        st.download_button("📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบจริง)", st.session_state.raw, "v50_step1_raw.xlsx")
         st.divider()
         
         if st.button("🪄 รอบ 2: สุ่มเติมช่องว่าง & ปรับค่าหลุดให้เข้ากลุ่มสเป็ค"):
-            with st.spinner("กำลังจัดฟอร์แมตตัวเลขและเกลี่ยค่าสเป็คแบบรวดเร็ว..."):
+            with st.spinner("กำลังเกลี่ยค่าสเป็คและแก้จุดค้างเรียบร้อย..."):
                 st.session_state.final = process_safe_random(st.session_state.raw)
             st.rerun()
             
     if "final" in st.session_state:
-        st.success("✅ บันทึกรูปแบบข้อมูล B81 (4 ตำแหน่ง) และ N11 ลงไฟล์สมบูรณ์แบบ!")
-        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v48_step2_final.xlsx")
+        st.success("✅ ประมวลผลรอบ 2 เสร็จสิ้น! ปุ่มดาวน์โหลดพร้อมใช้งานแล้วครับ")
+        st.download_button("📥 ดาวน์โหลดไฟล์ Final (ผ่านเกณฑ์ 100%)", st.session_state.final, "v50_step2_final.xlsx")
