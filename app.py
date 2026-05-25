@@ -11,11 +11,12 @@ from openpyxl.cell.cell import MergedCell
 from io import BytesIO
 
 # ==========================================
-# 💎 UI: ULTRA-PREMIUM GLASSMORPHISM
+# 💎 UI ULTRA-PREMIUM GLASSMORPHISM
 # ==========================================
 st.set_page_config(page_title="QAD System Hub", layout="wide")
 
-st.markdown("""
+st.markdown(
+    """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;500;700&family=Inter:wght@400;600;900&display=swap');
 
@@ -41,26 +42,27 @@ st.markdown("""
         border-right: 1px solid rgba(255, 255, 255, 0.3);
     }
 
-    /* ปุ่มเมนูหลัก: หรูหรา มีมิติ (Glassmorphism) */
+    /* ปุ่มเมนูหลัก หรูหรา มีมิติ (Glassmorphism) */
     div.stButton > button:first-child {
         background: rgba(255, 255, 255, 0.7);
         color: #0f172a;
         border: 1px solid rgba(15, 23, 42, 0.1);
-        border-radius: 0px; 
+        border-radius: 12px !important; 
         height: 140px;
-        font-size: 26px !important; /* ปรับลดลงเล็กน้อยเพื่อให้รองรับ 3 ปุ่มในหน้าเดียว */
+        font-size: 24px !important;
         font-weight: 800;
         text-transform: uppercase;
         letter-spacing: 1px;
         transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
         box-shadow: 0 10px 30px rgba(0,0,0,0.05), inset 0 0 0 1px rgba(255,255,255,0.8);
         backdrop-filter: blur(10px);
+        width: 100%;
     }
 
     div.stButton > button:hover {
-        background: #0f172a;
+        background: #0f172a !important;
         color: #ffffff !important;
-        transform: translateY(-5px) scale(1.01);
+        transform: translateY(-5px) scale(1.02);
         box-shadow: 0 20px 40px rgba(15, 23, 42, 0.2);
         border: 1px solid #3b82f6;
     }
@@ -68,7 +70,7 @@ st.markdown("""
     /* ชื่อแอปหลัก */
     .main-title {
         font-family: 'Kanit', sans-serif;
-        font-size: 80px;
+        font-size: 64px;
         font-weight: 700;
         color: #0f172a;
         text-align: center;
@@ -79,28 +81,29 @@ st.markdown("""
     .sub-title {
         text-align: center;
         color: #475569;
-        font-size: 24px;
+        font-size: 22px;
         font-weight: 500;
         margin-bottom: 3rem;
     }
 
     /* ขนาดตัวหนังสือคงเดิม */
     p, label, .stMarkdown {
-        font-size: 19px !important;
+        font-size: 18px !important;
     }
     
     h3 {
-        font-size: 28px !important;
+        font-size: 24px !important;
         font-weight: 700 !important;
         color: #1e293b !important;
+        margin-bottom: 12px !important;
     }
 
     /* Tabs สไตล์ Glass */
     .stTabs [data-baseweb="tab"] {
         height: 60px;
-        font-size: 20px;
+        font-size: 18px;
         background-color: rgba(226, 232, 240, 0.5);
-        border-radius: 0px;
+        border-radius: 8px 8px 0 0;
         color: #475569;
         padding: 0 40px;
         backdrop-filter: blur(5px);
@@ -113,32 +116,41 @@ st.markdown("""
 
     /* Table & Data Handling */
     [data-testid="stDataFrame"] {
-        border: 2px solid #0f172a !important;
+        border: 1px solid #e2e8f0 !important;
         background: white;
+        border-radius: 8px;
     }
     
     /* File Uploader แบบ Industrial Glass */
     .stFileUploader section {
         border: 2px dashed #0f172a;
-        border-radius: 0px;
+        border-radius: 8px !important;
         background-color: rgba(255, 255, 255, 0.5);
     }
-    </style>
-""", unsafe_allow_html=True)
 
-if "current_app" not in st.session_state:
+    /* ซ่อนแถบดั้งเดิมของ Streamlit เพื่อเพิ่มความเป็นเว็บจริง */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    [data-testid="stHeader"] {background: rgba(0,0,0,0) !important;}
+    </style>
+    """, 
+    unsafe_allow_html=True
+)
+
+if 'current_app' not in st.session_state:
     st.session_state.current_app = "Main Menu"
 
 def go_to_menu():
     for key in list(st.session_state.keys()):
-        if key not in ["current_app", "reset_counter", "uploader_key"]:
+        if key not in ['current_app', 'reset_counter', 'uploader_key']:
             del st.session_state[key]
     st.session_state.current_app = "Main Menu"
     st.rerun()
 
 
 # ==========================================
-# APP 1: FILE VALIDATOR (โค้ดเดิม 100%)
+# APP 1 FILE VALIDATOR (โค้ดเดิม 100%)
 # ==========================================
 def app_file_validator():
     st.markdown("<h1 style='text-align: center; color: #0f172a; font-size: 50px;'>📁 File Validator</h1>", unsafe_allow_html=True)
@@ -151,7 +163,7 @@ def app_file_validator():
             go_to_menu()
         if st.button("🔄 Refresh System", use_container_width=True):
             for key in list(st.session_state.keys()):
-                if key != "current_app": del st.session_state[key]
+                if key != 'current_app': del st.session_state[key]
             st.session_state.reset_counter = st.session_state.get('reset_counter', 0) + 1
             st.rerun()
 
@@ -177,13 +189,13 @@ def app_file_validator():
         
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown("**1. เลือกโมเดลอ้างอิง**")
-            selected_model_name = st.selectbox("Model", model_list, index=0, key=f"v_sel_{st.session_state.reset_counter}", label_visibility="collapsed")
+            st.markdown("1. เลือกโมเดลอ้างอิง")
+            selected_model_name = st.selectbox("Model", model_list, index=0, key=f"fv_sel_{st.session_state.reset_counter}", label_visibility="collapsed")
         
         if selected_model_name != "-- เลือกโมเดลอ้างอิง --":
             with c2:
-                st.markdown("**2. อัปโหลดไฟล์ที่ต้องการตรวจ**")
-                uploaded_file = st.file_uploader("Upload", type=["xlsx", "xlsm"], key=f"v_up_{st.session_state.reset_counter}", label_visibility="collapsed")
+                st.markdown("2. อัปโหลดไฟล์ที่ต้องการตรวจ")
+                uploaded_file = st.file_uploader("Upload", type=["xlsx", "xlsm"], key=f"fv_up_{st.session_state.reset_counter}", label_visibility="collapsed")
 
             if uploaded_file:
                 st.write("---")
@@ -201,14 +213,14 @@ def app_file_validator():
 
                     for r in range(76):
                         for c in range(df_ref.shape[1]):
-                            if r >= 12 and c in [3, 10]: continue
+                            if r == 12 and c in [3, 10]: continue
                             ref_v, user_v = str(df_ref.iloc[r, c]).strip(), str(df_user.iloc[r, c]).strip()
                             if ref_v != "" and (user_v == "" or user_v == "nan"):
                                 missing_data.setdefault(get_column_letter(c), []).append(str(r+1))
                             elif ref_v == "" and (user_v != "" and user_v != "nan") and r+1 != 12:
                                 extra_data.setdefault(get_column_letter(c), []).append(str(r+1))
 
-                    for row_idx in range(13, 77): 
+                    for row_idx in range(13, 77):
                         for col_idx, (col_label, error_list) in enumerate(zip(['D', 'K'], [d_errors, k_errors])):
                             target_col = 4 if col_label == 'D' else 11
                             cell = ws.cell(row=row_idx, column=target_col)
@@ -223,6 +235,7 @@ def app_file_validator():
                                         dt_temp = pd.to_datetime(val)
                                         is_valid_data = False if (dt_temp.hour == 0 and dt_temp.minute == 0 and dt_temp.second == 0) else True
                                     except: is_valid_data = False
+
                                 if not has_format or not is_valid_data:
                                     reason = "❌ Format ผิด" if not has_format else "❌ ขาดเวลา"
                                     error_list.append({"Row": row_idx, "Value": str(val), "Status": reason})
@@ -248,11 +261,11 @@ def app_file_validator():
 
 
 # ==========================================
-# APP 2: WASHING DATE PROCESSOR (โค้ดเดิม 100%)
+# APP 2 WASHING DATE PROCESSOR (โค้ดเดิม 100%)
 # ==========================================
 def read_excel_washing(file):
-    try: return pd.read_excel(file, engine="openpyxl", header=None)
-    except: return pd.read_excel(file, engine="xlrd", header=None)
+    try: return pd.read_excel(file, engine='openpyxl', header=None)
+    except: return pd.read_excel(file, engine='xlrd', header=None)
 
 def read_file1_washing(file):
     df = read_excel_washing(file)
@@ -269,25 +282,25 @@ def read_file2_washing(file):
     header_row = None
     for i in range(20):
         row = df.iloc[i].astype(str).str.lower()
-        if row.str.contains("runcard").any() and row.str.contains("barcode").any():
+        if row.str.contains('runcard').any() and row.str.contains('barcode').any():
             header_row = i; break
     if header_row is None:
         st.error("❌ หา header ไม่เจอ (Runcard / Barcode)"); return pd.DataFrame()
     df.columns = df.iloc[header_row]
     df = df[header_row + 1:]
     df.columns = df.columns.astype(str).str.strip().str.lower()
-    lot_cols = [c for c in df.columns if "runcard" in str(c).lower()]
-    barcode_cols = [c for c in df.columns if "barcode" in str(c).lower()]
-    packed_col = next((c for c in df.columns if "packed" in str(c).lower() and "date" in str(c).lower()), None)
+    lot_cols = [c for c in df.columns if 'runcard' in str(c).lower()]
+    barcode_cols = [c for c in df.columns if 'barcode' in str(c).lower()]
+    packed_col = next((c for c in df.columns if 'packed' in str(c).lower() and 'date' in str(c).lower()), None)
     
     if not lot_cols or not barcode_cols or packed_col is None:
         st.error("❌ หา column ไม่เจอ"); return pd.DataFrame()
     
     df_out = df[[lot_cols[0], barcode_cols[0], packed_col]].copy()
-    df_out.columns = ["Lot", "Barcode No", "Packed Date"]
-    df_out = df_out.dropna(subset=["Lot"])
-    df_out["Lot"] = df_out["Lot"].astype(str).str.strip()
-    df_out["Packed Date"] = pd.to_datetime(df_out["Packed Date"], errors="coerce")
+    df_out.columns = ['Lot', 'Barcode No', 'Packed Date']
+    df_out = df_out.dropna(subset=['Lot'])
+    df_out['Lot'] = df_out['Lot'].astype(str).str.strip()
+    df_out['Packed Date'] = pd.to_datetime(df_out['Packed Date'], errors='coerce')
     return df_out
 
 def extract_ww_day(barcode):
@@ -303,15 +316,15 @@ def extract_ww_day(barcode):
 
 def load_database():
     df = pd.read_csv("database.txt")
-    df["Date"] = pd.to_datetime(df["Date"], format="%d-%b-%Y", errors="coerce")
+    df['Date'] = pd.to_datetime(df['Date'], format='%d-%b-%Y', errors='coerce')
     return df
 
 def find_best_date(row, date_db):
-    if pd.isna(row["WW"]) or pd.isna(row["Day"]) or pd.isna(row["Packed Date"]): return None
-    candidates = date_db[(date_db["WW"] == row["WW"]) & (date_db["Day"] == row["Day"])].copy()
+    if pd.isna(row['WW']) or pd.isna(row['Day']) or pd.isna(row['Packed Date']): return None
+    candidates = date_db[(date_db['WW'] == row['WW']) & (date_db['Day'] == row['Day'])].copy()
     if candidates.empty: return None
-    candidates["diff"] = (candidates["Date"] - row["Packed Date"]).abs()
-    return candidates.sort_values("diff").iloc[0]["Date"]
+    candidates['diff'] = (candidates['Date'] - row['Packed Date']).abs()
+    return candidates.sort_values('diff').iloc[0]['Date']
 
 def app_washing_processor():
     st.markdown("<h1 style='text-align: center; color: #0f172a; font-size: 50px;'>📊 Washing Date Processor</h1>", unsafe_allow_html=True)
@@ -327,54 +340,54 @@ def app_washing_processor():
             st.session_state.uploader_key = st.session_state.get('uploader_key', 0) + 1
             st.rerun()
 
-    if "uploader_key" not in st.session_state:
+    if 'uploader_key' not in st.session_state:
         st.session_state.uploader_key = 0
 
     col_u1, col_u2 = st.columns(2)
     with col_u1:
-        st.markdown("**📂 ไฟล์ที่ 1 (Lot/Serial)**")
-        file1 = st.file_uploader("Upload 1", type=["xls", "xlsx", "csv"], key=f"file1_{st.session_state.uploader_key}", label_visibility="collapsed")
+        st.markdown("📂 ไฟล์ที่ 1 (LotSerial)")
+        file1 = st.file_uploader("Upload 1", type=["xls", "xlsx", "csv"], key=f"ffile1_{st.session_state.uploader_key}", label_visibility="collapsed")
     with col_u2:
-        st.markdown("**📂 ไฟล์ที่ 2 (Runcard / Barcode)**")
-        file2 = st.file_uploader("Upload 2", type=["xls", "xlsx", "csv"], key=f"file2_{st.session_state.uploader_key}", label_visibility="collapsed")
+        st.markdown("📂 ไฟล์ที่ 2 (Runcard / Barcode)")
+        file2 = st.file_uploader("Upload 2", type=["xls", "xlsx", "csv"], key=f"ffile2_{st.session_state.uploader_key}", label_visibility="collapsed")
 
     if st.button("🚀 PROCESS DATA", use_container_width=True):
         if not file1 or not file2:
             st.warning("⚠️ กรุณาอัปโหลดไฟล์ให้ครบ")
-        else:
+        else
             with st.spinner('กำลังประมวลผล...'):
                 try:
                     df1 = read_file1_washing(file1)
                     df2 = read_file2_washing(file2)
                     if not df2.empty:
-                        merged = pd.merge(df1, df2, on="Lot", how="left").drop_duplicates(subset=["Lot"])
+                        merged = pd.merge(df1, df2, on='Lot', how='left').drop_duplicates(subset=['Lot'])
                         merged[['WW', 'Day']] = merged['Barcode No'].apply(lambda x: pd.Series(extract_ww_day(x)))
-                        merged["WW"] = pd.to_numeric(merged["WW"], errors="coerce")
-                        merged["Day"] = pd.to_numeric(merged["Day"], errors="coerce")
+                        merged['WW'] = pd.to_numeric(merged['WW'], errors='coerce')
+                        merged['Day'] = pd.to_numeric(merged['Day'], errors='coerce')
                         
                         date_db = load_database()
-                        date_db["WW"] = pd.to_numeric(date_db["WW"], errors="coerce")
-                        date_db["Day"] = pd.to_numeric(date_db["Day"], errors="coerce")
+                        date_db['WW'] = pd.to_numeric(date_db['WW'], errors='coerce')
+                        date_db['Day'] = pd.to_numeric(date_db['Day'], errors='coerce')
                         
-                        merged["Washing Date Raw"] = merged.apply(lambda row: find_best_date(row, date_db), axis=1)
-                        output = merged[["Lot", "Barcode No", "WW", "Day", "Washing Date Raw"]].copy()
-                        output["Washing Date"] = pd.to_datetime(output["Washing Date Raw"]).dt.strftime("%d-%b-%Y")
-                        output = output[output["Lot"].astype(str).str.lower() != "lot/serial"].reset_index(drop=True)
+                        merged['Washing Date Raw'] = merged.apply(lambda row: find_best_date(row, date_db), axis=1)
+                        output = merged[['Lot', 'Barcode No', 'WW', 'Day', 'Washing Date Raw']].copy()
+                        output['Washing Date'] = pd.to_datetime(output['Washing Date Raw']).dt.strftime('%d-%b-%Y')
+                        output = output[output['Lot'].astype(str).str.lower() != 'lotserial'].reset_index(drop=True)
                         
-                        summary = output.groupby("Washing Date")["Lot"].count().reset_index().rename(columns={"Lot": "Total Lot"})
+                        summary = output.groupby('Washing Date')['Lot'].count().reset_index().rename(columns={'Lot': 'Total Lot'})
                         
                         buffer = io.BytesIO()
-                        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                            output.drop(columns=["Washing Date Raw"]).to_excel(writer, index=False, sheet_name="Result")
-                            summary.to_excel(writer, index=False, sheet_name="Summary")
+                        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                            output.drop(columns=['Washing Date Raw']).to_excel(writer, index=False, sheet_name='Result')
+                            summary.to_excel(writer, index=False, sheet_name='Summary')
                         
-                        st.session_state.output = output.drop(columns=["Washing Date Raw"])
+                        st.session_state.output = output.drop(columns=['Washing Date Raw'])
                         st.session_state.summary = summary
                         st.session_state.file = buffer.getvalue()
                 except Exception as e:
                     st.error(f"เกิดข้อผิดพลาด: {e}")
 
-    if st.session_state.get("output") is not None:
+    if st.session_state.get('output') is not None:
         st.success("✅ Process สำเร็จ!")
         t1, t2 = st.tabs(["📋 Result Detail", "📊 Summary View"])
         with t1: st.dataframe(st.session_state.output, use_container_width=True)
@@ -383,12 +396,12 @@ def app_washing_processor():
 
 
 # ==========================================
-# APP 3: MASTER AUTO-FILLER V57 (แอพที่เพิ่มเข้ามาใหม่)
+# APP 3 MASTER AUTO-FILLER V57 (แอพที่เพิ่มเข้ามาใหม่)
 # ==========================================
 def get_base_id(s):
     if pd.isna(s): return ""
     text = str(s).upper().replace(" ", "")
-    match = re.search(r'([ABT])-?(\d+)', text)
+    match = re.search(r'([ABT])-(\d+)', text)
     if match: return f"{match.group(1)}{int(match.group(2))}"
     return text
 
@@ -416,7 +429,7 @@ def get_val(ws, r, c):
 
 def extract_pure_number(text_val):
     if text_val is None: return None
-    match = re.search(r"[-+]?\d*\.\d+|\d+", str(text_val))
+    match = re.search(r'[-+]?\d*\.\d+|\d+', str(text_val))
     if match: return float(match.group())
     return None
 
@@ -445,15 +458,15 @@ def process_real_data(all_dim_file, lat_file, template_file, n7_start, n7_end):
     df_lat_cav2 = pd.read_excel(lat_file, sheet_name='LAT (Cav 2)', header=None)
     
     def scan_lat_data(df):
-        d = {"B": [], "N7": []}
+        d = {'B': [], 'N7': []}
         b_c = [(29, 31, 1, 33), (83, 85, 1, 33), (136, 138, 1, 33), (189, 191, 1, 25)]
         for r1, r3, c1, c2 in b_c:
             for c in range(c1, c2):
-                if r3 < len(df): d["B"].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
+                if r3 < len(df): d['B'].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
         n7_c = [(295, 297, 1, 33), (348, 350, 1, 33), (401, 403, 1, 17)]
         for r1, r3, c1, c2 in n7_c:
             for c in range(c1, c2):
-                if r3 < len(df): d["N7"].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
+                if r3 < len(df): d['N7'].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
         return d
 
     lat_src = {
@@ -461,10 +474,10 @@ def process_real_data(all_dim_file, lat_file, template_file, n7_start, n7_end):
         'cav2': scan_lat_data(df_lat_cav2)
     }
 
-    for sn in ["Cav 1", "Cav 2"]:
+    for sn in ['Cav 1', 'Cav 2']:
         if sn not in wb.sheetnames: continue
-        ws, m = wb[sn], ('cav1' if sn == "Cav 1" else 'cav2')
-        sheet_lat_name = 'LAT (Cav 1)' if sn == "Cav 1" else 'LAT (Cav 2)'
+        ws, m = wb[sn], ('cav1' if sn == 'Cav 1' else 'cav2')
+        sheet_lat_name = 'LAT (Cav 1)' if sn == 'Cav 1' else 'LAT (Cav 2)'
         
         n10_vals = [None, None, None]
         if sheet_lat_name in wb_lat.sheetnames:
@@ -485,12 +498,12 @@ def process_real_data(all_dim_file, lat_file, template_file, n7_start, n7_end):
         b_p, n7_p, curr_id, curr_ptr = 0, 0, None, 0
         for r in range(1, ws.max_row + 1):
             if n7_start <= r <= n7_end:
-                if lat_src[m] and n7_p < len(lat_src[m]["N7"]):
-                    v = lat_src[m]["N7"][n7_p]
-                    for i, c in enumerate([13, 14, 15]): 
+                if lat_src[m] and n7_p < len(lat_src[m]['N7']):
+                    v = lat_src[m]['N7'][n7_p]
+                    for i, c in enumerate([13, 14, 15]):
                         cell = get_writable_cell(ws, r, c)
                         cell.value = v[i]
-                        if curr_id and curr_id == "B81":
+                        if curr_id and curr_id == 'B81':
                             cell.number_format = '0.0000'
                         else:
                             cell.number_format = '0.00000'
@@ -502,12 +515,12 @@ def process_real_data(all_dim_file, lat_file, template_file, n7_start, n7_end):
                 if id_v != curr_id: curr_id, curr_ptr = id_v, 0
                 
             col12_txt = str(get_val(ws, r, 12)).strip().lower()
-            if "supplier" in col12_txt and curr_id:
+            if 'supplier' in col12_txt and curr_id:
                 vals = None
                 num = int(re.search(r'\d+', curr_id).group()) if re.search(r'\d+', curr_id) else 0
-                if curr_id.startswith("B") and 1 <= num <= 80:
-                    if lat_src[m] and b_p < len(lat_src[m]["B"]): vals = lat_src[m]["B"][b_p]; b_p += 1
-                elif curr_id == "N11":
+                if curr_id.startswith('B') and 1 <= num <= 80:
+                    if lat_src[m] and b_p < len(lat_src[m]['B']): vals = lat_src[m]['B'][b_p]; b_p += 1
+                elif curr_id == 'N11':
                     vals = n10_vals
                 elif curr_id in all_dim_master and curr_ptr < len(all_dim_master[curr_id]):
                     vals = all_dim_master[curr_id][curr_ptr][m]; curr_ptr += 1
@@ -516,163 +529,7 @@ def process_real_data(all_dim_file, lat_file, template_file, n7_start, n7_end):
                     for i, c in enumerate([13, 14, 15]):
                         cell = get_writable_cell(ws, r, c)
                         cell.value = vals[i]
-                        if curr_id and curr_id == "B81":
+                        if curr_id and curr_id == 'B81':
                             cell.number_format = '0.0000'
                         else:
-                            cell.number_format = '0.00000'
-    out = BytesIO(); wb.save(out); return out.getvalue()
-
-def process_safe_random(raw_data, n7_start, n7_end):
-    wb = openpyxl.load_workbook(BytesIO(raw_data), data_only=False)
-    
-    for sn in ["Cav 1", "Cav 2"]:
-        ws = wb[sn]
-        last_known_low, last_known_high, last_known_nom = None, None, None
-        curr_id = None
-        
-        for r in range(1, ws.max_row + 1):
-            id_v = get_base_id(get_val(ws, r, 1))
-            if id_v: curr_id = id_v
-
-            v_nom = get_val(ws, r, 4)
-            v_tol = get_val(ws, r, 8)
-            
-            if v_nom is not None and str(v_nom).strip() != "" and not str(v_nom).startswith("="):
-                parsed_nom = extract_pure_number(v_nom)
-                if parsed_nom is not None: last_known_nom = parsed_nom
-            if v_tol is not None and str(v_tol).strip() != "" and not str(v_tol).startswith("="):
-                parsed_tol = extract_pure_number(v_tol)
-                if parsed_tol is not None and last_known_nom is not None:
-                    last_known_low = last_known_nom - parsed_tol
-                    last_known_high = last_known_nom + parsed_tol
-
-            col12_txt = str(get_val(ws, r, 12)).strip().lower()
-            
-            is_n7_row = (n7_start <= r <= n7_end)
-            is_main_dimension = curr_id and any(curr_id.startswith(p) for p in ["A", "B", "T"]) and "supplier" in col12_txt
-            is_target = is_main_dimension or is_n7_row
-            
-            if is_target:
-                if is_n7_row:
-                    low, high, nom = 0.0, 0.4, 0.05
-                else:
-                    low, high, nom = last_known_low, last_known_high, last_known_nom
-                
-                if low is None or high is None: continue
-                
-                current_vals = []
-                for col in [13, 14, 15]:
-                    val = get_val(ws, r, col)
-                    try: current_vals.append(float(val))
-                    except: current_vals.append(None)
-                
-                passed_samples = [v for v in current_vals if v is not None and low <= v <= high]
-                final_vals = []
-                for v in current_vals:
-                    if v is None or not (low <= v <= high):
-                        base = random.choice(passed_samples) if passed_samples else nom
-                        tolerance_range = high - low
-                        diff = tolerance_range * 0.05 if tolerance_range > 0 else 0.0001
-                        new_v = base + random.uniform(-diff, diff)
-                        safe_v = max(low + 0.00002, min(high - 0.00002, new_v))
-                        final_vals.append(safe_v)
-                    else:
-                        final_vals.append(v)
-                
-                for i, col in enumerate([13, 14, 15]):
-                    cell = get_writable_cell(ws, r, col)
-                    if curr_id and curr_id == "B81":
-                        cell.value = round(final_vals[i], 4)
-                        cell.number_format = '0.0000'
-                    else:
-                        cell.value = round(final_vals[i], 5)
-                        cell.number_format = '0.00000'
-                    
-    out = BytesIO(); wb.save(out); return out.getvalue()
-
-def app_auto_filler():
-    st.markdown("<h1 style='text-align: center; color: #0f172a; font-size: 50px;'>📋 Master Auto-Filler V57</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='center-text' style='text-align: center; font-size: 22px; color: #64748b;'>ระบบจัดการไฟล์ฟอร์มอัตโนมัติ (Multi-Model Support) 🪄</p>", unsafe_allow_html=True)
-    st.divider()
-
-    with st.sidebar:
-        st.markdown("### 🧭 Control Panel")
-        if st.button("🏠 Home Menu", use_container_width=True):
-            go_to_menu()
-        if st.button("🔄 Reset ระบบ", use_container_width=True):
-            for k in list(st.session_state.keys()): 
-                if k != "current_app": del st.session_state[k]
-            st.rerun()
-
-    # 🛠️ ปุ่มสลับการเลือกโมเดล
-    selected_model = st.radio("🎯 กรุณาเลือก Model ชิ้นงานก่อนเริ่มระบบ:", ["Summit", "Dorado"], horizontal=True)
-
-    # กำหนด Config ปลายทางตามโมเดลชิ้นงาน
-    if selected_model == "Summit":
-        template_name = "form_template_Summit.xlsx"
-        n7_start_row, n7_end_row = 1976, 2055
-    else:
-        template_name = "form_template_Dorado.xlsx"
-        n7_start_row, n7_end_row = 1579, 1658
-
-    st.info(f"ระบบปัจจุบัน: คอนฟิกเพื่อทำงานกับโมเดล **{selected_model}** (ใช้ไฟล์ฟอร์ม: `{template_name}` / แถว N7: `{n7_start_row}-{n7_end_row}`)")
-
-    all_f = st.file_uploader("1. All Dimension", type=["xlsx"], key="af_uploader")
-    lat_f = st.file_uploader("2. LAT", type=["xlsx"], key="lf_uploader")
-
-    if all_f and lat_f:
-        if "raw" not in st.session_state:
-            if st.button(f"🚀 รอบ 1: วางข้อมูลจริง ({selected_model})", use_container_width=True):
-                with st.spinner(f"กำลังเขียนข้อมูลดิบลงใน Template ของ {selected_model}..."):
-                    st.session_state.raw = process_real_data(all_f, lat_f, template_name, n7_start_row, n7_end_row)
-                st.rerun()
-        else:
-            st.success(f"รอบ 1 ของ {selected_model} สำเร็จแล้ว! จัดเก็บโครงสร้างตารางข้อมูลดิบเรียบร้อย")
-            st.download_button(f"📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบ {selected_model})", st.session_state.raw, f"v57_{selected_model}_step1_raw.xlsx", use_container_width=True)
-            st.divider()
-            
-            if st.button(f"🪄 รอบ 2: สุ่มเติมช่องว่าง & ปรับค่าหลุด ({selected_model})", use_container_width=True):
-                with st.spinner(f"กำลังคำนวณเกลี่ยปรับค่าเข้าสเป็คเฉพาะกลุ่ม A, B, T และ N7 ของ {selected_model}..."):
-                    st.session_state.final = process_safe_random(st.session_state.raw, n7_start_row, n7_end_row)
-                st.rerun()
-                
-        if "final" in st.session_state:
-            st.success(f"✅ ข้อมูลของโมเดล {selected_model} ปรับสเป็คเรียบร้อยสมบูรณ์ 100% แล้วครับ!")
-            st.download_button(f"📥 ดาวน์โหลดไฟล์ Final ({selected_model})", st.session_state.final, f"v57_{selected_model}_final.xlsx", use_container_width=True)
-
-
-# ==========================================
-# MAIN ROUTING & INTERFACE
-# ==========================================
-if st.session_state.current_app == "Main Menu":
-    st.markdown("<div style='height: 60px;'></div>", unsafe_allow_html=True)
-    st.markdown("<p class='main-title'>QAD SYSTEM HUB</p>", unsafe_allow_html=True)
-    st.markdown("<p class='sub-title'>📂 QE Support Application 🚀</p>", unsafe_allow_html=True)
-    
-    _, col_main, _ = st.columns([0.05, 0.9, 0.05])
-    
-    with col_main:
-        c1, c2, c3 = st.columns(3, gap="large") # ปรับเป็น 3 คอลัมน์เพื่อรองรับแอปใหม่
-        with c1:
-            st.markdown("### 📋 ตรวจเช็ค Format ไฟล์")
-            if st.button("📁 File Validator", use_container_width=True):
-                st.session_state.current_app = "Validator"
-                st.rerun()
-        with c2:
-            st.markdown("### 🧼 ตรวจวันล้างสินค้า")
-            if st.button("📊 Washing Date Processor", use_container_width=True):
-                st.session_state.current_app = "Processor"
-                st.rerun()
-        with c3: # เพิ่ม UI สำหรับแอปที่ 3
-            st.markdown("### 📝 จัดการฟอร์มอัตโนมัติ")
-            if st.button("📋 Master Auto-Filler", use_container_width=True):
-                st.session_state.current_app = "AutoFiller"
-                st.rerun()
-
-    st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #94a3b8; font-size: 16px;'>© 2026 Quality Engineering | Systems v2.0 ✨</p>", unsafe_allow_html=True)
-
-# เส้นทางเข้าสู่แอปพลิเคชันย่อย
-elif st.session_state.current_app == "Validator": app_file_validator()
-elif st.session_state.current_app == "Processor": app_washing_processor()
-elif st.session_state.current_app == "AutoFiller": app_auto_filler() # เส้นทางของแอปที่ 3
+                            cell
