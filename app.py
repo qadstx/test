@@ -224,7 +224,7 @@ def app_file_validator():
                                     error_list.append({"Row": row_idx, "Value": str(val), "Status": reason})
                     status.update(label="ตรวจสอบเสร็จเรียบร้อย!", state="complete", expanded=False)
 
-                if not (f_errors or missing_data or extra_data or d_errors Artisans or k_errors):
+                if not (f_errors or missing_data or extra_data or d_errors or k_errors):
                     st.balloons()
                     st.success("✨ ยินดีด้วย! ข้อมูลถูกต้องสมบูรณ์ 100%")
                 else:
