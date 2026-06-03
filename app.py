@@ -1,676 +1,197 @@
 import streamlit as st
 import pandas as pd
 import io
-import re
 import os
-import datetime
-import random
-import openpyxl
-from openpyxl import load_workbook
-from openpyxl.cell.cell import MergedCell
-from io import BytesIO
+import glob
+import time
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service
 
-# ==============================================================================
-# 💎 ADDED MODERN WEB INTERFACE (CSS OVERRIDE) - DOES NOT TOUCH ORIGINAL FUNCTIONS
-# ==============================================================================
-st.set_page_config(page_title="QAD System Hub", layout="wide")
-
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;700&family=Inter:wght@400;600;800&display=swap');
-
-    /* พื้นหลัง Animated Modern Gradient */
-    .stApp {
-        background: linear-gradient(-45deg, #f8fafc, #e2e8f0, #f1f5f9, #cbd5e1);
-        background-size: 400% 400%;
-        animation: gradient 15s ease infinite;
-        color: #0f172a;
-        font-family: 'Inter', 'Kanit', sans-serif;
-    }
-    @keyframes gradient {
-        0% { background-position: 0% 50%; }
-        50% { background-position: 100% 50%; }
-        100% { background-position: 0% 50%; }
-    }
-
-    /* Sidebar กระจกฝ้าโปร่งแสง หรูหรา */
-    [data-testid="stSidebar"] {
-        background-color: rgba(255, 255, 255, 0.6) !important;
-        backdrop-filter: blur(15px);
-        border-right: 1px solid rgba(255, 255, 255, 0.3);
-    }
-
-    /* ดีไซน์ปุ่มหน้าแรกสไตล์ Web Portal แท้ๆ */
-    div.stButton > button:first-child {
-        background: rgba(255, 255, 255, 0.75);
-        color: #0f172a;
-        border: 1px solid rgba(15, 23, 42, 0.1);
-        border-radius: 12px !important; 
-        height: 140px;
-        font-size: 24px !important;
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        box-shadow: 0 10px 30px rgba(0,0,0,0.03), inset 0 0 0 1px rgba(255,255,255,0.8);
-        backdrop-filter: blur(10px);
-        width: 100%;
-    }
-    div.stButton > button:hover {
-        background: #0f172a !important;
-        color: #ffffff !important;
-        transform: translateY(-5px) scale(1.02);
-        box-shadow: 0 20px 40px rgba(15, 23, 42, 0.15);
-        border: 1px solid #3b82f6;
-    }
-
-    /* Typography & Layout Setup */
-    .main-title {
-        font-family: 'Kanit', sans-serif;
-        font-size: 64px;
-        font-weight: 700;
-        color: #0f172a;
-        text-align: center;
-        line-height: 1.1;
-        margin-top: 40px;
-        margin-bottom: 10px;
-    }
-    .sub-title {
-        text-align: center;
-        color: #475569;
-        font-size: 22px;
-        font-weight: 500;
-        margin-bottom: 3rem;
-    }
-    p, label, .stMarkdown { font-size: 18px !important; }
-    h3 { font-size: 24px !important; font-weight: 700 !important; color: #1e293b !important; }
-
-    /* Tabs สไตล์ Glass */
-    .stTabs [data-baseweb="tab"] {
-        height: 55px;
-        font-size: 18px;
-        background-color: rgba(226, 232, 240, 0.4);
-        border-radius: 8px 8px 0 0;
-        color: #475569;
-        padding: 0 35px;
-    }
-    .stTabs [aria-selected="true"] {
-        background-color: #0f172a !important;
-        color: #ffffff !important;
-    }
-
-    /* File Uploader บล็อกเรียบหรู */
-    .stFileUploader section {
-        border: 2px dashed #0f172a;
-        border-radius: 10px !important;
-        background-color: rgba(255, 255, 255, 0.4);
-    }
-
-    /* ซ่อนแถบรกๆ ของระบบดั้งเดิม */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-    [data-testid="stHeader"] {background: rgba(0,0,0,0) !important;}
-    </style>
-    """, 
-    unsafe_allow_html=True
-)
-
-# ==============================================================================
-# ORIGINAL LOGIC & FUNCTIONS START HERE (100% UNTOUCHED FROM YOUR FILE)
-# ==============================================================================
-
-if 'current_app' not in st.session_state:
-    st.session_state.current_app = "Main Menu"
-
-def go_to_menu():
-    for key in list(st.session_state.keys()):
-        if key not in ['current_app', 'reset_counter', 'uploader_key']:
-            del st.session_state[key]
-    st.session_state.current_app = "Main Menu"
-    st.rerun()
-
+st.set_page_config(layout="wide")
+st.title("🧪 Washing Date Auto-Fetch (Test App)")
+st.write("แอปทดสอบดึงข้อมูลอัตโนมัติจากเว็บบริษัท โดยอัปโหลดเพียงไฟล์เดียว")
 
 # ==========================================
-# APP 1 FILE VALIDATOR (โค้ดเดิม 100%)
+# 🌐 FUNCTION: SELENIUM BOT
 # ==========================================
-def app_file_validator():
-    st.markdown("<h1 style='text-align: center; color: #0f172a; font-size: 50px;'>📁 File Validator</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='center-text' style='text-align: center; font-size: 22px; color: #64748b;'>ตรวจสอบ format ไฟล์ก่อนส่ง ✨</p>", unsafe_allow_html=True)
-    st.divider()
+def fetch_file2_from_web(start_lot, end_lot):
+    # ตั้งค่าโฟลเดอร์สำหรับดาวน์โหลดชั่วคราว
+    download_dir = os.path.join(os.getcwd(), "temp_downloads")
+    if not os.path.exists(download_dir):
+        os.makedirs(download_dir)
+        
+    # เคลียร์ไฟล์เก่าออกก่อนรันรอบใหม่
+    for f in glob.glob(os.path.join(download_dir, "*")):
+        try: os.remove(f)
+        except: pass
 
-    with st.sidebar:
-        st.markdown("### 🧭 Control Panel")
-        if st.button("🏠 Home Menu", use_container_width=True):
-            go_to_menu()
-        if st.button("🔄 Refresh System", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                if key != 'current_app': del st.session_state[key]
-            st.session_state.reset_counter = st.session_state.get('reset_counter', 0) + 1
-            st.rerun()
+    chrome_options = webdriver.ChromeOptions()
+    # 💡 เพื่อทดสอบในรอบแรก ผมขอเปิดหน้าจอเบราว์เซอร์ไว้ก่อนนะครับ คุณจะได้เห็นตอนบอทมันทำงาน
+    # ถ้าใช้งานจริงแล้วอยากให้มันซ่อน ค่อยเอาเครื่องหมาย # ออกจากบรรทัดด้านล่างครับ
+    # chrome_options.add_argument("--headless") 
+    
+    prefs = {
+        "download.default_directory": download_dir,
+        "download.prompt_for_download": False,
+        "directory_upgrade": True
+    }
+    chrome_options.add_experimental_option("prefs", prefs)
 
-    if 'reset_counter' not in st.session_state:
-        st.session_state.reset_counter = 0
-
-    TARGET_SHEET = "RAMP v1.3"
-
-    def get_column_letter(n):
-        result = ""
-        while n >= 0:
-            result = chr(n % 26 + 65) + result
-            n = n // 26 - 1
-        return result
-
-    def get_available_models():
-        files = [f for f in os.listdir('.') if f.startswith('reference_') and (f.endswith('.xlsx') or f.endswith('.xlsm'))]
-        return {f.replace('reference_', '').split('.')[0]: f for f in files}
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    wait = WebDriverWait(driver, 30) # เพิ่มเวลารอเผื่อเน็ตหรือเว็บช้า
+    actions = ActionChains(driver)
 
     try:
-        available_models = get_available_models()
-        model_list = ["-- เลือกโมเดลอ้างอิง --"] + sorted(list(available_models.keys()))
+        # 1. เข้าหน้าเว็บและทำการล็อกอิน
+        st.info("🌐 กำลังเปิดหน้าเว็บ...")
+        driver.get("http://sms53.nokpct.com:88/MPCTSystem/View/Login/Default.aspx")
         
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("1. เลือกโมเดลอ้างอิง")
-            selected_model_name = st.selectbox("Model", model_list, index=0, key=f"fv_sel_{st.session_state.reset_counter}", label_visibility="collapsed")
+        st.info("🔑 กำลังกรอกข้อมูล Login...")
+        # 💡 กรอก Username
+        user_input = wait.until(EC.presence_of_element_located((By.ID, "txtSearchUser")))
+        user_input.send_keys("2M260005")
         
-        if selected_model_name != "-- เลือกโมเดลอ้างอิง --":
-            with c2:
-                st.markdown("2. อัปโหลดไฟล์ที่ต้องการตรวจ")
-                uploaded_file = st.file_uploader("Upload", type=["xlsx", "xlsm"], key=f"fv_up_{st.session_state.reset_counter}", label_visibility="collapsed")
+        # 💡 กรอก Password
+        pass_input = driver.find_element(By.ID, "txtSearchPass")
+        pass_input.send_keys("56891")
+        
+        # 💡 กดปุ่ม Login
+        login_btn = driver.find_element(By.ID, "imgBtnLogin")
+        login_btn.click()
+        time.sleep(3) 
 
-            if uploaded_file:
-                st.write("---")
-                with st.status("🔍 กำลังตรวจสอบความถูกต้อง...", expanded=True) as status:
-                    wb = load_workbook(uploaded_file, data_only=False)
-                    ws = wb[TARGET_SHEET]
-                    df_ref = pd.read_excel(available_models[selected_model_name], sheet_name=TARGET_SHEET, header=None).fillna("")
-                    df_user = pd.read_excel(uploaded_file, sheet_name=TARGET_SHEET, header=None).fillna("")
-                    
-                    f_errors, missing_data, extra_data, d_errors, k_errors = [], {}, {}, [], []
+        # 2. เลื่อนเมาส์ชี้เมนูย่อยลึก 4 ชั้น
+        st.info("🖱️ กำลังนำทางไปเมนู Seagate Traceability...")
+        
+        menu_product = wait.until(EC.visibility_of_element_located((By.XPATH, "//a[contains(@class, 'rmLink')]//span[text()='Product']")))
+        actions.move_to_element(menu_product).perform()
+        time.sleep(0.5)
+        
+        menu_hdd = wait.until(EC.visibility_of_element_located((By.XPATH, "//a[contains(@class, 'rmLink')]//span[text()='HDD']")))
+        actions.move_to_element(menu_hdd).perform()
+        time.sleep(0.5)
+        
+        menu_seagate = wait.until(EC.visibility_of_element_located((By.XPATH, "//a[contains(@class, 'rmLink')]//span[text()='Seagate']")))
+        actions.move_to_element(menu_seagate).perform()
+        time.sleep(0.5)
+        
+        menu_trace = wait.until(EC.visibility_of_element_located((By.XPATH, "//a[contains(@class, 'rmLink')]//span[text()='Seagate Traceability']")))
+        menu_trace.click()
 
-                    for r, c, label in [(2, 5, "F3"), (4, 5, "F5")]:
-                        if str(df_user.iloc[r, c]).strip() != str(df_ref.iloc[r, c]).strip():
-                            f_errors.append({"Position": label, "Found": df_user.iloc[r, c], "Target": df_ref.iloc[r, c]})
+        # 3. กรอกข้อมูลค้นหาในหน้าเงื่อนไข
+        st.info("✍️ กำลังตั้งค่าเงื่อนไขการค้นหา...")
+        
+        # เลือก MPN
+        mpn_input = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContent_cbMPN_Input")))
+        mpn_input.click()
+        time.sleep(0.3)
+        mpn_input.send_keys(Keys.CONTROL + "a")
+        mpn_input.send_keys(Keys.DELETE)
+        mpn_input.send_keys("FHNGZ8427V00") 
+        time.sleep(0.3)
+        mpn_input.send_keys(Keys.ENTER)
+        time.sleep(1)
 
-                    for r in range(76):
-                        for c in range(df_ref.shape[1]):
-                            if r == 12 and c in [3, 10]: continue
-                            ref_v, user_v = str(df_ref.iloc[r, c]).strip(), str(df_user.iloc[r, c]).strip()
-                            if ref_v != "" and (user_v == "" or user_v == "nan"):
-                                missing_data.setdefault(get_column_letter(c), []).append(str(r+1))
-                            elif ref_v == "" and (user_v != "" and user_v != "nan") and r+1 != 12:
-                                extra_data.setdefault(get_column_letter(c), []).append(str(r+1))
+        # กรอก Lot No From
+        input_from = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContent_txtSearchLotNoFrom")))
+        input_from.click()
+        input_from.send_keys(Keys.CONTROL + "a")
+        input_from.send_keys(Keys.DELETE)
+        input_from.send_keys(start_lot)
+        time.sleep(0.3)
 
-                    for row_idx in range(13, 77):
-                        for col_idx, (col_label, error_list) in enumerate(zip(['D', 'K'], [d_errors, k_errors])):
-                            target_col = 4 if col_label == 'D' else 11
-                            cell = ws.cell(row=row_idx, column=target_col)
-                            if cell.value is not None:
-                                val, fmt = cell.value, str(cell.number_format).lower()
-                                has_format = (('y' in fmt or ('d' in fmt and 'm' in fmt)) and 'h' in fmt)
-                                is_valid_data = False
-                                if isinstance(val, (datetime.datetime, datetime.date)):
-                                    is_valid_data = True
-                                else:
-                                    try:
-                                        dt_temp = pd.to_datetime(val)
-                                        is_valid_data = False if (dt_temp.hour == 0 and dt_temp.minute == 0 and dt_temp.second == 0) else True
-                                    except: is_valid_data = False
+        # กรอก Lot No To
+        input_to = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContent_txtSearchLotNoTo")))
+        input_to.click()
+        input_to.send_keys(Keys.CONTROL + "a")
+        input_to.send_keys(Keys.DELETE)
+        input_to.send_keys(end_lot)
+        time.sleep(0.5)
 
-                                if not has_format or not is_valid_data:
-                                    reason = "❌ Format ผิด" if not has_format else "❌ ขาดเวลา"
-                                    error_list.append({"Row": row_idx, "Value": str(val), "Status": reason})
-                    status.update(label="ตรวจสอบเสร็จเรียบร้อย!", state="complete", expanded=False)
+        # 4. กดปุ่ม Execute
+        st.info("⚡ กำลังประมวลผลดึงข้อมูล (Execute)...")
+        btn_execute = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'rtbWrap')]//span[text()='Execute']")))
+        btn_execute.click()
+        time.sleep(6) # รอเว็บโหลดข้อมูลเข้าตารางสักครู่
 
-                if not (f_errors or missing_data or extra_data or d_errors or k_errors):
-                    st.balloons()
-                    st.success("✨ ยินดีด้วย! ข้อมูลถูกต้องสมบูรณ์ 100%")
-                else:
-                    if f_errors:
-                        st.error("⚠️ part no. / drawing no. ไม่ถูกต้อง (ช่อง F3/F5)")
-                        st.table(pd.DataFrame(f_errors))
-                    col_mis, col_ext = st.columns(2)
-                    with col_mis:
-                        if missing_data:
-                            st.warning("📉 ข้อมูลที่หายไป (Missing Data)")
-                            st.table([{"Column": k, "Rows": ", ".join(v)} for k, v in missing_data.items()])
-                    with col_ext:
-                        if extra_data:
-                            st.warning("🚫 ข้อมูลส่วนเกิน (Extra Data)")
-                            st.table([{"Column": k, "Rows": ", ".join(v)} for k, v in extra_data.items()])
-    except Exception as e: st.error(f"เกิดข้อผิดพลาด: {e}")
-
+        # 5. กดปุ่ม Excel เพื่อดาวน์โหลด
+        st.info("📥 กำลังดาวน์โหลดไฟล์ Excel จากหน้าเว็บ...")
+        btn_excel = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'rtbWrap')]//span[text()='Excel']")))
+        btn_excel.click()
+        time.sleep(5) # รอไฟล์ดาวน์โหลดเสร็จสิ้น
+        
+        # 6. เช็กไฟล์ที่โหลดมาล่าสุด
+        files = glob.glob(os.path.join(download_dir, "*"))
+        if not files:
+            st.error("❌ บอทดาวน์โหลดไฟล์ไม่สำเร็จ")
+            return None
+            
+        latest_file = max(files, key=os.path.getctime)
+        st.success(f"📂 ได้รับไฟล์เรียบร้อย: {os.path.basename(latest_file)}")
+        
+        if latest_file.endswith(('.xls', '.xlsx')):
+            return pd.read_excel(latest_file)
+        elif latest_file.endswith('.csv'):
+            return pd.read_csv(latest_file)
+            
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในสคริปต์บอท: {e}")
+        return None
+    finally:
+        driver.quit()
 
 # ==========================================
-# APP 2 WASHING DATE PROCESSOR (โค้ดเดิม 100%)
+# 📊 APP STREAMLIT UI & READ FILE 1
 # ==========================================
-def read_excel_washing(file):
-    try: return pd.read_excel(file, engine='openpyxl', header=None)
-    except: return pd.read_excel(file, engine='xlrd', header=None)
+file1 = st.file_uploader("📂 Step 1: อัปโหลดไฟล์ที่ 1 (Lot/Serial)", type=["xls", "xlsx", "csv"])
 
-def read_file1_washing(file):
-    df = read_excel_washing(file)
-    col, start_row = 5, 16
-    data = df.iloc[start_row:, col]
+if file1 is not None:
+    # อ่านไฟล์แรก (อิงตาม Logic ตำแหน่งแถวและคอลัมน์เดิมของคุณ)
+    try:
+        df1_raw = pd.read_excel(file1, engine="openpyxl", header=None)
+    except:
+        df1_raw = pd.read_excel(file1, engine="xlrd", header=None)
+        
+    col = 5
+    start_row = 16
+    data = df1_raw.iloc[start_row:, col]
+
     lot_list = []
     for val in data:
-        if pd.isna(val) or str(val).strip() == "": break
-        lot_list.append(str(val).strip())
-    return pd.DataFrame({"Lot": lot_list})
-
-def read_file2_washing(file):
-    df = read_excel_washing(file)
-    header_row = None
-    for i in range(20):
-        row = df.iloc[i].astype(str).str.lower()
-        if row.str.contains('runcard').any() and row.str.contains('barcode').any():
-            header_row = i; break
-    if header_row is None:
-        st.error("❌ หา header ไม่เจอ (Runcard / Barcode)"); return pd.DataFrame()
-    df.columns = df.iloc[header_row]
-    df = df[header_row + 1:]
-    df.columns = df.columns.astype(str).str.strip().str.lower()
-    lot_cols = [c for c in df.columns if 'runcard' in str(c).lower()]
-    barcode_cols = [c for c in df.columns if 'barcode' in str(c).lower()]
-    packed_col = next((c for c in df.columns if 'packed' in str(c).lower() and 'date' in str(c).lower()), None)
-    
-    if not lot_cols or not barcode_cols or packed_col is None:
-        st.error("❌ หา column ไม่เจอ"); return pd.DataFrame()
-    
-    df_out = df[[lot_cols[0], barcode_cols[0], packed_col]].copy()
-    df_out.columns = ['Lot', 'Barcode No', 'Packed Date']
-    df_out = df_out.dropna(subset=['Lot'])
-    df_out['Lot'] = df_out['Lot'].astype(str).str.strip()
-    df_out['Packed Date'] = pd.to_datetime(df_out['Packed Date'], errors='coerce')
-    return df_out
-
-def extract_ww_day(barcode):
-    try:
-        s = str(barcode)
-        match = re.search('[A-Za-z]', s)
-        if not match: return None, None
-        start = match.start()
-        code = s[start+3:start+6]
-        if len(code) != 3 or not code.isdigit(): return None, None
-        return int(code[:2]), int(code[2])
-    except: return None, None
-
-def load_database():
-    df = pd.read_csv("database.txt")
-    df['Date'] = pd.to_datetime(df['Date'], format='%d-%b-%Y', errors='coerce')
-    return df
-
-def find_best_date(row, date_db):
-    if pd.isna(row['WW']) or pd.isna(row['Day']) or pd.isna(row['Packed Date']): return None
-    candidates = date_db[(date_db['WW'] == row['WW']) & (date_db['Day'] == row['Day'])].copy()
-    if candidates.empty: return None
-    candidates['diff'] = (candidates['Date'] - row['Packed Date']).abs()
-    return candidates.sort_values('diff').iloc[0]['Date']
-
-def app_washing_processor():
-    st.markdown("<h1 style='text-align: center; color: #0f172a; font-size: 50px;'>📊 Washing Date Processor</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='center-text' style='text-align: center; font-size: 22px; color: #64748b;'>ตรวจสอบวันล้างจาก lot no. ⚡</p>", unsafe_allow_html=True)
-    st.divider()
-    
-    with st.sidebar:
-        st.markdown("### 🧭 Control Panel")
-        if st.button("🏠 Home Menu", use_container_width=True):
-            go_to_menu()
-        if st.button("🔄 Refresh System", use_container_width=True):
-            st.session_state.output, st.session_state.summary, st.session_state.file = None, None, None
-            st.session_state.uploader_key = st.session_state.get('uploader_key', 0) + 1
-            st.rerun()
-
-    if 'uploader_key' not in st.session_state:
-        st.session_state.uploader_key = 0
-
-    col_u1, col_u2 = st.columns(2)
-    with col_u1:
-        st.markdown("📂 ไฟล์ที่ 1 (LotSerial)")
-        file1 = st.file_uploader("Upload 1", type=["xls", "xlsx", "csv"], key=f"ffile1_{st.session_state.uploader_key}", label_visibility="collapsed")
-    with col_u2:
-        st.markdown("📂 ไฟล์ที่ 2 (Runcard / Barcode)")
-        file2 = st.file_uploader("Upload 2", type=["xls", "xlsx", "csv"], key=f"ffile2_{st.session_state.uploader_key}", label_visibility="collapsed")
-
-    if st.button("🚀 PROCESS DATA", use_container_width=True):
-        if not file1 or not file2:
-            st.warning("⚠️ กรุณาอัปโหลดไฟล์ให้ครบ")
-        else:
-            with st.spinner('กำลังประมวลผล...'):
-                try:
-                    df1 = read_file1_washing(file1)
-                    df2 = read_file2_washing(file2)
-                    if not df2.empty:
-                        merged = pd.merge(df1, df2, on='Lot', how='left').drop_duplicates(subset=['Lot'])
-                        merged[['WW', 'Day']] = merged['Barcode No'].apply(lambda x: pd.Series(extract_ww_day(x)))
-                        merged['WW'] = pd.to_numeric(merged['WW'], errors='coerce')
-                        merged['Day'] = pd.to_numeric(merged['Day'], errors='coerce')
-                        
-                        date_db = load_database()
-                        date_db['WW'] = pd.to_numeric(date_db['WW'], errors='coerce')
-                        date_db['Day'] = pd.to_numeric(date_db['Day'], errors='coerce')
-                        
-                        merged['Washing Date Raw'] = merged.apply(lambda row: find_best_date(row, date_db), axis=1)
-                        output = merged[['Lot', 'Barcode No', 'WW', 'Day', 'Washing Date Raw']].copy()
-                        output['Washing Date'] = pd.to_datetime(output['Washing Date Raw']).dt.strftime('%d-%b-%Y')
-                        output = output[output['Lot'].astype(str).str.lower() != 'lotserial'].reset_index(drop=True)
-                        
-                        summary = output.groupby('Washing Date')['Lot'].count().reset_index().rename(columns={'Lot': 'Total Lot'})
-                        
-                        buffer = io.BytesIO()
-                        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                            output.drop(columns=['Washing Date Raw']).to_excel(writer, index=False, sheet_name='Result')
-                            summary.to_excel(writer, index=False, sheet_name='Summary')
-                        
-                        st.session_state.output = output.drop(columns=['Washing Date Raw'])
-                        st.session_state.summary = summary
-                        st.session_state.file = buffer.getvalue()
-                except Exception as e:
-                    st.error(f"เกิดข้อผิดพลาด: {e}")
-
-    if st.session_state.get('output') is not None:
-        st.success("✅ Process สำเร็จ!")
-        t1, t2 = st.tabs(["📋 Result Detail", "📊 Summary View"])
-        with t1: st.dataframe(st.session_state.output, use_container_width=True)
-        with t2: st.dataframe(st.session_state.summary, use_container_width=True)
-        st.download_button(label="📥 Download Excel", data=st.session_state.file, file_name="washing_date_result.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-
-# ==========================================
-# APP 3 MASTER AUTO-FILLER V57 
-# ==========================================
-def get_base_id(s):
-    if pd.isna(s): return ""
-    text = str(s).upper().replace(" ", "")
-    match = re.search(r'([ABT])-(\d+)', text)
-    if match: return f"{match.group(1)}{int(match.group(2))}"
-    return text
-
-def clean_number(value):
-    try:
-        if value is None or pd.isna(value): return None
-        return abs(float(value))
-    except: return value
-
-def get_writable_cell(ws, r, c):
-    cell = ws.cell(row=r, column=c)
-    if isinstance(cell, MergedCell):
-        for merged_range in ws.merged_cells.ranges:
-            if cell.coordinate in merged_range:
-                return ws.cell(row=merged_range.min_row, column=merged_range.min_col)
-    return cell
-
-def get_val(ws, r, c):
-    cell = ws.cell(row=r, column=c)
-    if isinstance(cell, MergedCell):
-        for merged_range in ws.merged_cells.ranges:
-            if cell.coordinate in merged_range:
-                return ws.cell(row=merged_range.min_row, column=merged_range.min_col).value
-    return cell.value
-
-def extract_pure_number(text_val):
-    if text_val is None: return None
-    match = re.search(r'[-+]?\d*\.\d+|\d+', str(text_val))
-    if match: return float(match.group())
-    return None
-
-def process_real_data(all_dim_file, lat_file, template_file, n7_start, n7_end):
-    wb = openpyxl.load_workbook(template_file, data_only=False)
-    wb_lat = openpyxl.load_workbook(lat_file, data_only=True)
-    
-    df_all = pd.read_excel(all_dim_file, header=None)
-    all_dim_master = {}
-    c1_idx, c2_idx = 8, 16
-    for _, row in df_all.iterrows():
-        idx = [i for i, v in enumerate(row) if str(v).strip() == '1']
-        if len(idx) >= 2: c1_idx, c2_idx = idx[0], idx[1]; break
-    for _, row in df_all.iterrows():
-        raw_name = str(row.iloc[0]).strip()
-        if not re.search(r'[ABT]', raw_name): continue
-        bid = get_base_id(raw_name)
-        if bid:
-            if bid not in all_dim_master: all_dim_master[bid] = []
-            all_dim_master[bid].append({
-                'cav1': [clean_number(row.iloc[c1_idx+i]) for i in range(3)],
-                'cav2': [clean_number(row.iloc[c2_idx+i]) for i in range(3)]
-            })
-    
-    df_lat_cav1 = pd.read_excel(lat_file, sheet_name='LAT (Cav 1)', header=None)
-    df_lat_cav2 = pd.read_excel(lat_file, sheet_name='LAT (Cav 2)', header=None)
-    
-    def scan_lat_data(df):
-        d = {'B': [], 'N7': []}
-        b_c = [(29, 31, 1, 33), (83, 85, 1, 33), (136, 138, 1, 33), (189, 191, 1, 25)]
-        for r1, r3, c1, c2 in b_c:
-            for c in range(c1, c2):
-                if r3 < len(df): d['B'].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
-        n7_c = [(295, 297, 1, 33), (348, 350, 1, 33), (401, 403, 1, 17)]
-        for r1, r3, c1, c2 in n7_c:
-            for c in range(c1, c2):
-                if r3 < len(df): d['N7'].append([clean_number(df.iloc[r1+i, c]) for i in range(3)])
-        return d
-
-    lat_src = {
-        'cav1': scan_lat_data(df_lat_cav1),
-        'cav2': scan_lat_data(df_lat_cav2)
-    }
-
-    for sn in ['Cav 1', 'Cav 2']:
-        if sn not in wb.sheetnames: continue
-        ws, m = wb[sn], ('cav1' if sn == 'Cav 1' else 'cav2')
-        sheet_lat_name = 'LAT (Cav 1)' if sn == 'Cav 1' else 'LAT (Cav 2)'
+        if pd.isna(val): break
+        val_str = str(val).strip()
+        if val_str == "": break
+        lot_list.append(val_str)
         
-        n10_vals = [None, None, None]
-        if sheet_lat_name in wb_lat.sheetnames:
-            ws_lat_src = wb_lat[sheet_lat_name]
-            try:
-                n10_vals = [
-                    float(ws_lat_src['R402'].value),
-                    float(ws_lat_src['R403'].value),
-                    float(ws_lat_src['R404'].value)
-                ]
-            except:
-                n10_vals = [
-                    clean_number(ws_lat_src['R402'].value),
-                    clean_number(ws_lat_src['R403'].value),
-                    clean_number(ws_lat_src['R404'].value)
-                ]
-
-        b_p, n7_p, curr_id, curr_ptr = 0, 0, None, 0
-        for r in range(1, ws.max_row + 1):
-            if n7_start <= r <= n7_end:
-                if lat_src[m] and n7_p < len(lat_src[m]['N7']):
-                    v = lat_src[m]['N7'][n7_p]
-                    for i, c in enumerate([13, 14, 15]):
-                        cell = get_writable_cell(ws, r, c)
-                        cell.value = v[i]
-                        if curr_id and curr_id == 'B81':
-                            cell.number_format = '0.0000'
-                        else:
-                            cell.number_format = '0.00000'
-                    n7_p += 1
-                continue
-                
-            id_v = get_base_id(get_val(ws, r, 1))
-            if id_v:
-                if id_v != curr_id: curr_id, curr_ptr = id_v, 0
-                
-            col12_txt = str(get_val(ws, r, 12)).strip().lower()
-            if 'supplier' in col12_txt and curr_id:
-                vals = None
-                num = int(re.search(r'\d+', curr_id).group()) if re.search(r'\d+', curr_id) else 0
-                if curr_id.startswith('B') and 1 <= num <= 80:
-                    if lat_src[m] and b_p < len(lat_src[m]['B']): vals = lat_src[m]['B'][b_p]; b_p += 1
-                elif curr_id == 'N11':
-                    vals = n10_vals
-                elif curr_id in all_dim_master and curr_ptr < len(all_dim_master[curr_id]):
-                    vals = all_dim_master[curr_id][curr_ptr][m]; curr_ptr += 1
-                
-                if vals:
-                    for i, c in enumerate([13, 14, 15]):
-                        cell = get_writable_cell(ws, r, c)
-                        cell.value = vals[i]
-                        if curr_id and curr_id == 'B81':
-                            cell.number_format = '0.0000'
-                        else:
-                            cell.number_format = '0.00000'
-    out = BytesIO()
-    wb.save(out); return out.getvalue()
-
-def process_safe_random(raw_data, n7_start, n7_end):
-    wb = openpyxl.load_workbook(BytesIO(raw_data), data_only=False)
+    df1 = pd.DataFrame({"Lot": lot_list})
     
-    for sn in ['Cav 1', 'Cav 2']:
-        ws = wb[sn]
-        last_known_low, last_known_high, last_known_nom = None, None, None
-        curr_id = None
+    if not df1.empty:
+        start_lot = df1["Lot"].iloc[0]
+        end_lot = df1["Lot"].iloc[-1]
         
-        for r in range(1, ws.max_row + 1):
-            id_v = get_base_id(get_val(ws, r, 1))
-            if id_v: curr_id = id_v
-
-            v_nom = get_val(ws, r, 4)
-            v_tol = get_val(ws, r, 8)
-            
-            if v_nom is not None and str(v_nom).strip() != "" and not str(v_nom).startswith('='):
-                parsed_nom = extract_pure_number(v_nom)
-                if parsed_nom is not None: last_known_nom = parsed_nom
-            if v_tol is not None and str(v_tol).strip() != "" and not str(v_tol).startswith('='):
-                parsed_tol = extract_pure_number(v_tol)
-                if parsed_tol is not None and last_known_nom is not None:
-                    last_known_low = last_known_nom - parsed_tol
-                    last_known_high = last_known_nom + parsed_tol
-
-            col12_txt = str(get_val(ws, r, 12)).strip().lower()
-            
-            is_n7_row = (n7_start <= r <= n7_end)
-            is_main_dimension = curr_id and any(curr_id.startswith(p) for p in ['A', 'B', 'T']) and 'supplier' in col12_txt
-            is_target = is_main_dimension or is_n7_row
-            
-            if is_target:
-                if is_n7_row:
-                    low, high, nom = 0.0, 0.4, 0.05
-                else:
-                    low, high, nom = last_known_low, last_known_high, last_known_nom
+        # แสดงข้อมูล Lot ที่ตรวจจับได้จากไฟล์แรก
+        col1, col2, col3 = st.columns(3)
+        col1.metric("จำนวน Lot ทั้งหมดในไฟล์", len(df1))
+        col2.metric("Lot ตัวแรก (Start)", start_lot)
+        col3.metric("Lot ตัวสุดท้าย (End)", end_lot)
+        
+        st.write("---")
+        st.subheader("📋 ข้อมูลจากไฟล์แรกที่คุณอัปโหลด")
+        st.dataframe(df1, height=200)
+        
+        # ปุ่มกดเพื่อเริ่มการทำงานของบอท
+        if st.button("🚀 Step 2: สั่งบอทเปิดเว็บไปดาวน์โหลดไฟล์อัตโนมัติ", type="primary"):
+            with st.spinner("🤖 บอทกำลังทำงาน ห้ามปิดหน้าต่างนี้จนกว่าจะเสร็จสิ้น..."):
+                web_data = fetch_file2_from_web(start_lot, end_lot)
                 
-                if low is None or high is None: continue
-                
-                current_vals = []
-                for col in [13, 14, 15]:
-                    val = get_val(ws, r, col)
-                    try: current_vals.append(float(val))
-                    except: current_vals.append(None)
-                
-                passed_samples = [v for v in current_vals if v is not None and low <= v <= high]
-                final_vals = []
-                for v in current_vals:
-                    if v is None or not (low <= v <= high):
-                        base = random.choice(passed_samples) if passed_samples else nom
-                        tolerance_range = high - low
-                        diff = tolerance_range * 0.05 if tolerance_range > 0 else 0.0001
-                        new_v = base + random.uniform(-diff, diff)
-                        safe_v = max(low + 0.00002, min(high - 0.00002, new_v))
-                        final_vals.append(safe_v)
-                    else:
-                        final_vals.append(v)
-                
-                for i, col in enumerate([13, 14, 15]):
-                    cell = get_writable_cell(ws, r, col)
-                    if curr_id and curr_id == 'B81':
-                        cell.value = round(final_vals[i], 4)
-                        cell.number_format = '0.0000'
-                    else:
-                        cell.value = round(final_vals[i], 5)
-                        cell.number_format = '0.00000'
-                    
-    out = BytesIO()
-    wb.save(out); return out.getvalue()
-
-def app_auto_filler():
-    st.markdown("<h1 style='text-align: center; color: #0f172a; font-size: 50px;'>📋 100% Dimension Filler</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='center-text' style='text-align: center; font-size: 22px; color: #64748b;'>ระบบจัดการไฟล์ฟอร์มอัตโนมัติ (Multi-Model Support) 🪄</p>", unsafe_allow_html=True)
-    st.divider()
-
-    with st.sidebar:
-        st.markdown("### 🧭 Control Panel")
-        if st.button("🏠 Home Menu", use_container_width=True):
-            go_to_menu()
-        if st.button("🔄 Reset ระบบ", use_container_width=True):
-            for k in list(st.session_state.keys()): 
-                if k != 'current_app': del st.session_state[k]
-            st.rerun()
-
-    selected_model = st.radio("🎯 กรุณาเลือก Model ชิ้นงานก่อนเริ่มระบบ", ["Summit", "Dorado"], horizontal=True)
-
-    if selected_model == "Summit":
-        template_name = "form_template_Summit.xlsx"
-        n7_start_row, n7_end_row = 1976, 2055
+            if web_data is not None:
+                st.success("🎉 ดึงข้อมูลสำเร็จ! ด้านล่างนี้คือข้อมูลจำลองจาก File 2 ที่บอทไปดึงมาให้")
+                st.dataframe(web_data)
     else:
-        template_name = "form_template_Dorado.xlsx"
-        n7_start_row, n7_end_row = 1579, 1658
-
-    st.info(f"ระบบปัจจุบัน คอนฟิกเพื่อทำงานกับโมเดล {selected_model} (ใช้ไฟล์ฟอร์ม `{template_name}` | แถว N7 `{n7_start_row}-{n7_end_row}`)")
-
-    all_f = st.file_uploader("1. All Dimension", type=["xlsx"], key="af_uploader")
-    lat_f = st.file_uploader("2. LAT", type=["xlsx"], key="lf_uploader")
-
-    if all_f and lat_f:
-        if 'raw' not in st.session_state:
-            if st.button(f"🚀 รอบ 1 วางข้อมูลจริง ({selected_model})", use_container_width=True):
-                with st.spinner(f"กำลังเขียนข้อมูลดิบลงใน Template ของ {selected_model}..."):
-                    st.session_state.raw = process_real_data(all_f, lat_f, template_name, n7_start_row, n7_end_row)
-                st.rerun()
-        else:
-            st.success(f"รอบ 1 ของ {selected_model} สำเร็จแล้ว! จัดเก็บโครงสร้างตารางข้อมูลดิบเรียบร้อย")
-            st.download_button(f"📥 ดาวน์โหลดไฟล์ตรวจผลรอบ 1 (ค่าดิบ {selected_model})", st.session_state.raw, f"100%dim_{selected_model}_step1_raw.xlsx", use_container_width=True)
-            st.divider()
-            
-            if st.button(f"🪄 รอบ 2 สุ่มเติมช่องว่าง & ปรับค่าหลุด ({selected_model})", use_container_width=True):
-                with st.spinner(f"กำลังคำนวณเกลี่ยปรับค่าเข้าสเป็คเฉพาะกลุ่ม A, B, T และ N7 ของ {selected_model}..."):
-                    st.session_state.final = process_safe_random(st.session_state.raw, n7_start_row, n7_end_row)
-                st.rerun()
-                
-        if 'final' in st.session_state:
-            st.success(f"✅ ข้อมูลของโมเดล {selected_model} ปรับสเป็คเรียบร้อยสมบูรณ์ 100% แล้วครับ!")
-            st.download_button(f"📥 ดาวน์โหลดไฟล์ Final ({selected_model})", st.session_state.final, f"100%dim_{selected_model}_final.xlsx", use_container_width=True)
-
-
-# ==========================================
-# MAIN ROUTING & INTERFACE
-# ==========================================
-if st.session_state.current_app == "Main Menu":
-    st.markdown("<div style='height: 60px;'></div>", unsafe_allow_html=True)
-    st.markdown("<p class='main-title'>QAD SYSTEM HUB</p>", unsafe_allow_html=True)
-    st.markdown("<p class='sub-title'>📂 QE Support Application 🚀</p>", unsafe_allow_html=True)
-    
-    _, col_main, _ = st.columns([0.05, 0.9, 0.05])
-    
-    with col_main:
-        c1, c2, c3 = st.columns(3, gap="large")
-        with c1:
-            st.markdown("### 📋 ตรวจเช็ค Format ไฟล์")
-            if st.button("📁 File Validator", use_container_width=True):
-                st.session_state.current_app = "Validator"
-                st.rerun()
-        with c2:
-            st.markdown("### 🧼 ตรวจวันล้างสินค้า")
-            if st.button("📊 Washing Date Processor", use_container_width=True):
-                st.session_state.current_app = "Processor"
-                st.rerun()
-        with c3:
-            st.markdown("### 📝 จัดการฟอร์มอัตโนมัติ")
-            if st.button("📋 100% Dimension Filler", use_container_width=True):
-                st.session_state.current_app = "AutoFiller"
-                st.rerun()
-
-    st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #94a3b8; font-size: 16px;'>© 2026 Quality Engineering Systems v2.0 ✨</p>", unsafe_allow_html=True)
-
-elif st.session_state.current_app == "Validator": 
-    app_file_validator()
-elif st.session_state.current_app == "Processor": 
-    app_washing_processor()
-elif st.session_state.current_app == "AutoFiller": 
-    app_auto_filler()
+        st.error("❌ ไม่พบข้อมูล Lot ในไฟล์แรกที่อัปโหลด กรุณาตรวจสอบตำแหน่งแถว/คอลัมน์")
