@@ -1,197 +1,290 @@
-import streamlit as st
-import pandas as pd
+import base64
 import io
-import os
-import glob
-import time
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.keys import Keys
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.service import Service
+import uuid
+from datetime import date
 
-st.set_page_config(layout="wide")
-st.title("🧪 Washing Date Auto-Fetch (Test App)")
-st.write("แอปทดสอบดึงข้อมูลอัตโนมัติจากเว็บบริษัท โดยอัปโหลดเพียงไฟล์เดียว")
+import pandas as pd
+import requests
+import streamlit as st
+from streamlit_calendar import calendar
 
-# ==========================================
-# 🌐 FUNCTION: SELENIUM BOT
-# ==========================================
-def fetch_file2_from_web(start_lot, end_lot):
-    # ตั้งค่าโฟลเดอร์สำหรับดาวน์โหลดชั่วคราว
-    download_dir = os.path.join(os.getcwd(), "temp_downloads")
-    if not os.path.exists(download_dir):
-        os.makedirs(download_dir)
-        
-    # เคลียร์ไฟล์เก่าออกก่อนรันรอบใหม่
-    for f in glob.glob(os.path.join(download_dir, "*")):
-        try: os.remove(f)
-        except: pass
+st.set_page_config(page_title="Task & Calendar", page_icon="📅", layout="wide")
 
-    chrome_options = webdriver.ChromeOptions()
-    # 💡 เพื่อทดสอบในรอบแรก ผมขอเปิดหน้าจอเบราว์เซอร์ไว้ก่อนนะครับ คุณจะได้เห็นตอนบอทมันทำงาน
-    # ถ้าใช้งานจริงแล้วอยากให้มันซ่อน ค่อยเอาเครื่องหมาย # ออกจากบรรทัดด้านล่างครับ
-    # chrome_options.add_argument("--headless") 
-    
-    prefs = {
-        "download.default_directory": download_dir,
-        "download.prompt_for_download": False,
-        "directory_upgrade": True
+# --- GitHub Config ---
+TOKEN = st.secrets["GITHUB_TOKEN"]
+REPO = st.secrets["GITHUB_REPO"]
+BRANCH = st.secrets.get("GITHUB_BRANCH", "data")
+FILE_PATH = st.secrets.get("EXCEL_PATH", "tasks_data.xlsx")
+
+API_URL = f"https://api.github.com/repos/{REPO}/contents/{FILE_PATH}"
+HEADERS = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Accept": "application/vnd.github+json",
+}
+
+DEFAULT_TAGS = pd.DataFrame([
+    {"Tag": "AML", "Color": "#8E44AD"},
+    {"Tag": "FA Submit", "Color": "#E74C3C"},
+    {"Tag": "General", "Color": "#2980B9"},
+])
+EMPTY_TASKS = pd.DataFrame(columns=["id", "Task", "Tag", "Due", "Status"])
+
+
+# --- GitHub Read / Write Functions ---
+def get_github_file():
+    r = requests.get(API_URL, headers=HEADERS, params={"ref": BRANCH}, timeout=15)
+    if r.status_code == 404:
+        return EMPTY_TASKS.copy(), DEFAULT_TAGS.copy(), None
+    r.raise_for_status()
+    data = r.json()
+    raw_bytes = base64.b64decode(data["content"])
+    excel = pd.ExcelFile(io.BytesIO(raw_bytes), engine="openpyxl")
+
+    df_tasks = pd.read_excel(excel, sheet_name="Tasks") if "Tasks" in excel.sheet_names else EMPTY_TASKS.copy()
+    df_tags = pd.read_excel(excel, sheet_name="Tags") if "Tags" in excel.sheet_names else DEFAULT_TAGS.copy()
+
+    if not df_tasks.empty:
+        df_tasks["Due"] = pd.to_datetime(df_tasks["Due"], errors="coerce").dt.date
+        df_tasks["id"] = df_tasks["id"].astype(str)
+    return df_tasks, df_tags, data["sha"]
+
+
+def save_to_github(df_tasks: pd.DataFrame, df_tags: pd.DataFrame, commit_msg="Update tasks"):
+    # ดึง sha ล่าสุดก่อนเขียนเสมอ กัน Error 409 Conflict
+    r_check = requests.get(API_URL, headers=HEADERS, params={"ref": BRANCH}, timeout=15)
+    sha = r_check.json()["sha"] if r_check.status_code == 200 else None
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df_tasks.to_excel(writer, sheet_name="Tasks", index=False)
+        df_tags.to_excel(writer, sheet_name="Tags", index=False)
+
+    encoded = base64.b64encode(output.getvalue()).decode("utf-8")
+    payload = {
+        "message": commit_msg,
+        "content": encoded,
+        "branch": BRANCH,
     }
-    chrome_options.add_experimental_option("prefs", prefs)
+    if sha:
+        payload["sha"] = sha
 
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    wait = WebDriverWait(driver, 30) # เพิ่มเวลารอเผื่อเน็ตหรือเว็บช้า
-    actions = ActionChains(driver)
+    r_put = requests.put(API_URL, headers=HEADERS, json=payload, timeout=15)
+    r_put.raise_for_status()
+    st.session_state.df_tasks = df_tasks
+    st.session_state.df_tags = df_tags
 
-    try:
-        # 1. เข้าหน้าเว็บและทำการล็อกอิน
-        st.info("🌐 กำลังเปิดหน้าเว็บ...")
-        driver.get("http://sms53.nokpct.com:88/MPCTSystem/View/Login/Default.aspx")
-        
-        st.info("🔑 กำลังกรอกข้อมูล Login...")
-        # 💡 กรอก Username
-        user_input = wait.until(EC.presence_of_element_located((By.ID, "txtSearchUser")))
-        user_input.send_keys("2M260005")
-        
-        # 💡 กรอก Password
-        pass_input = driver.find_element(By.ID, "txtSearchPass")
-        pass_input.send_keys("56891")
-        
-        # 💡 กดปุ่ม Login
-        login_btn = driver.find_element(By.ID, "imgBtnLogin")
-        login_btn.click()
-        time.sleep(3) 
 
-        # 2. เลื่อนเมาส์ชี้เมนูย่อยลึก 4 ชั้น
-        st.info("🖱️ กำลังนำทางไปเมนู Seagate Traceability...")
-        
-        menu_product = wait.until(EC.visibility_of_element_located((By.XPATH, "//a[contains(@class, 'rmLink')]//span[text()='Product']")))
-        actions.move_to_element(menu_product).perform()
-        time.sleep(0.5)
-        
-        menu_hdd = wait.until(EC.visibility_of_element_located((By.XPATH, "//a[contains(@class, 'rmLink')]//span[text()='HDD']")))
-        actions.move_to_element(menu_hdd).perform()
-        time.sleep(0.5)
-        
-        menu_seagate = wait.until(EC.visibility_of_element_located((By.XPATH, "//a[contains(@class, 'rmLink')]//span[text()='Seagate']")))
-        actions.move_to_element(menu_seagate).perform()
-        time.sleep(0.5)
-        
-        menu_trace = wait.until(EC.visibility_of_element_located((By.XPATH, "//a[contains(@class, 'rmLink')]//span[text()='Seagate Traceability']")))
-        menu_trace.click()
+def text_color_for_bg(hex_color: str) -> str:
+    hex_color = hex_color.lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    luminance = (0.299 * r + 0.587 * g + 0.114 * b)
+    return "#000000" if luminance > 160 else "#FFFFFF"
 
-        # 3. กรอกข้อมูลค้นหาในหน้าเงื่อนไข
-        st.info("✍️ กำลังตั้งค่าเงื่อนไขการค้นหา...")
-        
-        # เลือก MPN
-        mpn_input = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContent_cbMPN_Input")))
-        mpn_input.click()
-        time.sleep(0.3)
-        mpn_input.send_keys(Keys.CONTROL + "a")
-        mpn_input.send_keys(Keys.DELETE)
-        mpn_input.send_keys("FHNGZ8427V00") 
-        time.sleep(0.3)
-        mpn_input.send_keys(Keys.ENTER)
-        time.sleep(1)
 
-        # กรอก Lot No From
-        input_from = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContent_txtSearchLotNoFrom")))
-        input_from.click()
-        input_from.send_keys(Keys.CONTROL + "a")
-        input_from.send_keys(Keys.DELETE)
-        input_from.send_keys(start_lot)
-        time.sleep(0.3)
+def get_display_status(row) -> str:
+    if row["Status"] == "Done":
+        return "Done"
+    if pd.notna(row["Due"]) and row["Due"] < date.today():
+        return "Late"
+    return "Pending"
 
-        # กรอก Lot No To
-        input_to = wait.until(EC.presence_of_element_located((By.ID, "ctl00_MainContent_txtSearchLotNoTo")))
-        input_to.click()
-        input_to.send_keys(Keys.CONTROL + "a")
-        input_to.send_keys(Keys.DELETE)
-        input_to.send_keys(end_lot)
-        time.sleep(0.5)
 
-        # 4. กดปุ่ม Execute
-        st.info("⚡ กำลังประมวลผลดึงข้อมูล (Execute)...")
-        btn_execute = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'rtbWrap')]//span[text()='Execute']")))
-        btn_execute.click()
-        time.sleep(6) # รอเว็บโหลดข้อมูลเข้าตารางสักครู่
+# --- Load Initial Data ---
+if "df_tasks" not in st.session_state:
+    with st.spinner("กำลังโหลดข้อมูลจาก GitHub..."):
+        t_df, tag_df, _ = get_github_file()
+        st.session_state.df_tasks = t_df
+        st.session_state.df_tags = tag_df
 
-        # 5. กดปุ่ม Excel เพื่อดาวน์โหลด
-        st.info("📥 กำลังดาวน์โหลดไฟล์ Excel จากหน้าเว็บ...")
-        btn_excel = wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@class, 'rtbWrap')]//span[text()='Excel']")))
-        btn_excel.click()
-        time.sleep(5) # รอไฟล์ดาวน์โหลดเสร็จสิ้น
-        
-        # 6. เช็กไฟล์ที่โหลดมาล่าสุด
-        files = glob.glob(os.path.join(download_dir, "*"))
-        if not files:
-            st.error("❌ บอทดาวน์โหลดไฟล์ไม่สำเร็จ")
-            return None
-            
-        latest_file = max(files, key=os.path.getctime)
-        st.success(f"📂 ได้รับไฟล์เรียบร้อย: {os.path.basename(latest_file)}")
-        
-        if latest_file.endswith(('.xls', '.xlsx')):
-            return pd.read_excel(latest_file)
-        elif latest_file.endswith('.csv'):
-            return pd.read_csv(latest_file)
-            
-    except Exception as e:
-        st.error(f"❌ เกิดข้อผิดพลาดในสคริปต์บอท: {e}")
-        return None
-    finally:
-        driver.quit()
+df_tasks = st.session_state.df_tasks
+df_tags = st.session_state.df_tags
+tag_color_map = dict(zip(df_tags["Tag"], df_tags["Color"]))
+tag_list = df_tags["Tag"].tolist()
 
-# ==========================================
-# 📊 APP STREAMLIT UI & READ FILE 1
-# ==========================================
-file1 = st.file_uploader("📂 Step 1: อัปโหลดไฟล์ที่ 1 (Lot/Serial)", type=["xls", "xlsx", "csv"])
 
-if file1 is not None:
-    # อ่านไฟล์แรก (อิงตาม Logic ตำแหน่งแถวและคอลัมน์เดิมของคุณ)
-    try:
-        df1_raw = pd.read_excel(file1, engine="openpyxl", header=None)
-    except:
-        df1_raw = pd.read_excel(file1, engine="xlrd", header=None)
-        
-    col = 5
-    start_row = 16
-    data = df1_raw.iloc[start_row:, col]
+# --- Header & Quick Add Bar ---
+col_title, col_sync = st.columns([6, 1])
+with col_title:
+    st.title("📅 Task Manager & Calendar")
+with col_sync:
+    st.write("")
+    if st.button("🔄 Sync GitHub", use_container_width=True):
+        t_df, tag_df, _ = get_github_file()
+        st.session_state.df_tasks = t_df
+        st.session_state.df_tags = tag_df
+        st.rerun()
 
-    lot_list = []
-    for val in data:
-        if pd.isna(val): break
-        val_str = str(val).strip()
-        if val_str == "": break
-        lot_list.append(val_str)
-        
-    df1 = pd.DataFrame({"Lot": lot_list})
-    
-    if not df1.empty:
-        start_lot = df1["Lot"].iloc[0]
-        end_lot = df1["Lot"].iloc[-1]
-        
-        # แสดงข้อมูล Lot ที่ตรวจจับได้จากไฟล์แรก
-        col1, col2, col3 = st.columns(3)
-        col1.metric("จำนวน Lot ทั้งหมดในไฟล์", len(df1))
-        col2.metric("Lot ตัวแรก (Start)", start_lot)
-        col3.metric("Lot ตัวสุดท้าย (End)", end_lot)
-        
-        st.write("---")
-        st.subheader("📋 ข้อมูลจากไฟล์แรกที่คุณอัปโหลด")
-        st.dataframe(df1, height=200)
-        
-        # ปุ่มกดเพื่อเริ่มการทำงานของบอท
-        if st.button("🚀 Step 2: สั่งบอทเปิดเว็บไปดาวน์โหลดไฟล์อัตโนมัติ", type="primary"):
-            with st.spinner("🤖 บอทกำลังทำงาน ห้ามปิดหน้าต่างนี้จนกว่าจะเสร็จสิ้น..."):
-                web_data = fetch_file2_from_web(start_lot, end_lot)
-                
-            if web_data is not None:
-                st.success("🎉 ดึงข้อมูลสำเร็จ! ด้านล่างนี้คือข้อมูลจำลองจาก File 2 ที่บอทไปดึงมาให้")
-                st.dataframe(web_data)
+with st.form("quick_add", clear_on_submit=True):
+    c1, c2, c3, c4 = st.columns([4, 2, 2, 1.2])
+    new_task = c1.text_input("ชื่องาน (Task)", placeholder="เช่น AML V6, MT1, FA Submit...")
+    new_tag = c2.selectbox("Tag", tag_list if tag_list else ["General"])
+    new_due = c3.date_input("Due Date", value=date.today())
+    submitted = c4.form_submit_button("➕ เพิ่มงาน", type="primary", use_container_width=True)
+
+    if submitted and new_task.strip():
+        new_row = pd.DataFrame([{
+            "id": str(uuid.uuid4())[:8],
+            "Task": new_task.strip(),
+            "Tag": new_tag,
+            "Due": new_due,
+            "Status": "Pending",
+        }])
+        updated_tasks = pd.concat([df_tasks, new_row], ignore_index=True)
+        save_to_github(updated_tasks, df_tags, f"Add task: {new_task.strip()}")
+        st.toast("เพิ่มงานและเซฟลง GitHub แล้ว ✅")
+        st.rerun()
+
+
+# --- Main Tabs ---
+tab_list, tab_cal, tab_set = st.tabs(["📋 Task List", "📅 Calendar", "⚙️ Tag & Color Settings"])
+
+
+# === TAB 1: TASK LIST (Grouped by Tag, Sorted by Due) ===
+with tab_list:
+    if df_tasks.empty:
+        st.info("ยังไม่มีงาน ลองเพิ่มงานจากช่องด้านบนได้เลยครับ")
     else:
-        st.error("❌ ไม่พบข้อมูล Lot ในไฟล์แรกที่อัปโหลด กรุณาตรวจสอบตำแหน่งแถว/คอลัมน์")
+        f1, f2 = st.columns([2, 6])
+        hide_done = f1.checkbox("ซ่อนงานที่ Done แล้ว", value=False)
+        edit_mode = f2.toggle("โหมดแก้ไขตาราง (Bulk Edit)", value=False)
+
+        if edit_mode:
+            edited = st.data_editor(
+                df_tasks.sort_values("Due"),
+                num_rows="dynamic",
+                use_container_width=True,
+                column_config={
+                    "id": None,
+                    "Tag": st.column_config.SelectboxColumn("Tag", options=tag_list, required=True),
+                    "Due": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD", required=True),
+                    "Status": st.column_config.SelectboxColumn("Status", options=["Pending", "Done"], required=True),
+                },
+            )
+            if st.button("💾 บันทึกการแก้ไขทั้งหมดลง GitHub", type="primary"):
+                edited["id"] = edited["id"].fillna("").apply(lambda x: x if x else str(uuid.uuid4())[:8])
+                save_to_github(edited.reset_index(drop=True), df_tags, "Bulk edit tasks")
+                st.toast("บันทึกตารางลง GitHub แล้ว ✅")
+                st.rerun()
+        else:
+            view_df = df_tasks.copy()
+            view_df["DisplayStatus"] = view_df.apply(get_display_status, axis=1)
+            if hide_done:
+                view_df = view_df[view_df["Status"] != "Done"]
+
+            for tag_name in tag_list + [t for t in view_df["Tag"].unique() if t not in tag_list]:
+                group = view_df[view_df["Tag"] == tag_name].sort_values("Due")
+                if group.empty:
+                    continue
+
+                bg = tag_color_map.get(tag_name, "#555555")
+                fg = text_color_for_bg(bg)
+                st.markdown(
+                    f'<div style="background:{bg};color:{fg};padding:6px 14px;border-radius:6px;'
+                    f'font-weight:700;margin-top:12px;margin-bottom:6px;display:inline-block;">'
+                    f'{tag_name} ({len(group)})</div>',
+                    unsafe_allow_html=True,
+                )
+
+                for _, row in group.iterrows():
+                    r1, r2, r3, r4, r5 = st.columns([0.5, 4.5, 2, 1.5, 0.8])
+                    is_done = row["Status"] == "Done"
+                    checked = r1.checkbox("", value=is_done, key=f"chk_{row['id']}", label_visibility="collapsed")
+                    if checked != is_done:
+                        df_tasks.loc[df_tasks["id"] == row["id"], "Status"] = "Done" if checked else "Pending"
+                        save_to_github(df_tasks, df_tags, f"Toggle status: {row['Task']}")
+                        st.rerun()
+
+                    task_label = f"~~{row['Task']}~~" if is_done else f"**{row['Task']}**"
+                    r2.markdown(task_label)
+                    r3.write(f"📅 {row['Due']}")
+
+                    st_badge = {"Done": "🟢 Done", "Late": "🔴 Late", "Pending": "🟠 Pending"}[row["DisplayStatus"]]
+                    r4.write(st_badge)
+
+                    if r5.button("🗑️", key=f"del_{row['id']}", help="ลบงานนี้"):
+                        df_tasks = df_tasks[df_tasks["id"] != row["id"]].reset_index(drop=True)
+                        save_to_github(df_tasks, df_tags, f"Delete task: {row['Task']}")
+                        st.rerun()
+
+
+# === TAB 2: CALENDAR ===
+with tab_cal:
+    c_opt1, c_opt2 = st.columns([3, 5])
+    color_mode = c_opt1.radio(
+        "สีการ์ดในปฏิทิน",
+        ["สีตาม Tag (Done เป็นสีเขียว)", "สีตาม Tag ทั้งหมด"],
+        horizontal=True,
+    )
+
+    events = []
+    for _, row in df_tasks.iterrows():
+        if pd.isna(row["Due"]):
+            continue
+        disp_st = get_display_status(row)
+        prefix = {"Done": "✓ ", "Late": "⚠️ ", "Pending": ""}[disp_st]
+
+        if color_mode == "สีตาม Tag (Done เป็นสีเขียว)" and disp_st == "Done":
+            bg = "#27AE60"
+        else:
+            bg = tag_color_map.get(row["Tag"], "#3788D8")
+
+        events.append({
+            "title": f"{prefix}{row['Task']}",
+            "start": str(row["Due"]),
+            "allDay": True,
+            "backgroundColor": bg,
+            "borderColor": bg,
+            "textColor": text_color_for_bg(bg),
+        })
+
+    cal_options = {
+        "initialView": "dayGridMonth",
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": "dayGridMonth,listMonth",
+        },
+        "height": 680,
+        "firstDay": 1,
+    }
+    calendar(events=events, options=cal_options, key="main_calendar")
+
+
+# === TAB 3: TAG & COLOR SETTINGS ===
+with tab_set:
+    st.subheader("เพิ่ม / แก้ไขสี Tag")
+    with st.form("add_tag_form", clear_on_submit=True):
+        s1, s2, s3 = st.columns([3, 1, 1.5])
+        t_name = s1.text_input("ชื่อ Tag")
+        t_color = s2.color_picker("เลือกสี", "#3498DB")
+        add_t = s3.form_submit_button("💾 บันทึก Tag", type="primary", use_container_width=True)
+        if add_t and t_name.strip():
+            name_clean = t_name.strip()
+            if name_clean in df_tags["Tag"].values:
+                df_tags.loc[df_tags["Tag"] == name_clean, "Color"] = t_color
+            else:
+                df_tags = pd.concat([df_tags, pd.DataFrame([{"Tag": name_clean, "Color": t_color}])], ignore_index=True)
+            save_to_github(df_tags=df_tags, df_tasks=df_tasks, commit_msg=f"Update tag: {name_clean}")
+            st.toast(f"เซฟ Tag '{name_clean}' ลง GitHub แล้ว ✅")
+            st.rerun()
+
+    st.divider()
+    for idx, row in df_tags.iterrows():
+        c1, c2, c3 = st.columns([3, 1.5, 1])
+        bg = row["Color"]
+        fg = text_color_for_bg(bg)
+        c1.markdown(
+            f'<span style="background:{bg};color:{fg};padding:5px 14px;border-radius:6px;font-weight:600;">'
+            f'{row["Tag"]}</span>',
+            unsafe_allow_html=True,
+        )
+        new_c = c2.color_picker("", bg, key=f"cp_{row['Tag']}", label_visibility="collapsed")
+        if new_c != bg:
+            df_tags.loc[idx, "Color"] = new_c
+            save_to_github(df_tasks, df_tags, f"Change color: {row['Tag']}")
+            st.rerun()
+
+        if c3.button("ลบ", key=f"del_tag_{row['Tag']}"):
+            df_tags = df_tags[df_tags["Tag"] != row["Tag"]].reset_index(drop=True)
+            save_to_github(df_tasks, df_tags, f"Delete tag: {row['Tag']}")
+            st.rerun()
