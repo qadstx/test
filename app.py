@@ -18,6 +18,15 @@ def today_th():
     return datetime.now(TH_TZ).date()
 
 
+def parse_cal_date(date_str: str):
+    if "T" in date_str:
+        dt = pd.to_datetime(date_str)
+        if dt.tzinfo is not None:
+            return dt.tz_convert(TH_TZ).date()
+        return dt.date()
+    return pd.to_datetime(date_str).date()
+
+
 # --- GitHub Config ---
 TOKEN = st.secrets["GITHUB_TOKEN"]
 REPO = st.secrets["GITHUB_REPO"]
@@ -35,7 +44,7 @@ DEFAULT_TAGS = pd.DataFrame([
     {"Tag": "FA Submit", "Color": "#E74C3C"},
     {"Tag": "General", "Color": "#2980B9"},
 ])
-TASK_COLUMNS = ["id", "Task", "Tag", "Due", "Status", "Note"]
+TASK_COLUMNS = ["id", "Task", "Tag", "PIC", "Due", "Status", "Note"]
 EMPTY_TASKS = pd.DataFrame(columns=TASK_COLUMNS)
 
 STATUS_LABELS = {
@@ -43,7 +52,6 @@ STATUS_LABELS = {
     "Done": "🟢 Done",
     "Late": "🔴 Late",
 }
-LABEL_TO_STATUS = {v: k for k, v in STATUS_LABELS.items()}
 STATUS_OPTIONS = ["Pending", "Done", "Late"]
 
 
@@ -58,6 +66,7 @@ def normalize_tasks(df: pd.DataFrame) -> pd.DataFrame:
         df["id"] = df["id"].fillna("").astype(str).apply(lambda x: x if x else str(uuid.uuid4())[:8])
         df["Task"] = df["Task"].fillna("").astype(str)
         df["Tag"] = df["Tag"].fillna("General").astype(str)
+        df["PIC"] = df["PIC"].fillna("").astype(str)
         df["Status"] = df["Status"].fillna("Pending").astype(str)
         df["Note"] = df["Note"].fillna("").astype(str)
     return df
@@ -136,7 +145,10 @@ if "df_tasks" not in st.session_state:
         t_df, tag_df, _ = get_github_file()
         st.session_state.df_tasks = t_df
         st.session_state.df_tags = tag_df
-        st.session_state.data_ver = 0
+
+st.session_state.df_tasks = normalize_tasks(st.session_state.df_tasks)
+if "data_ver" not in st.session_state:
+    st.session_state.data_ver = 0
 
 df_tasks = st.session_state.df_tasks
 df_tags = st.session_state.df_tags
@@ -158,20 +170,24 @@ with col_sync:
         st.rerun()
 
 with st.form("quick_add", clear_on_submit=True):
-    c1, c2, c3, c4, c5 = st.columns([3.2, 1.8, 1.6, 1.4, 1.2])
+    c1, c2, c3, c4, c5 = st.columns([3.0, 1.6, 1.5, 1.5, 1.4])
     new_task = c1.text_input("ชื่องาน (Task)", placeholder="เช่น AML V6, MT1, FA Submit...")
     new_tag = c2.selectbox("Tag", tag_list if tag_list else ["General"])
-    new_due = c3.date_input("Due Date", value=today_th())
-    new_status = c4.selectbox("Status", STATUS_OPTIONS, format_func=lambda x: STATUS_LABELS[x])
-    st.write("")
-    submitted = c5.form_submit_button("➕ เพิ่มงาน", type="primary", use_container_width=True)
-    new_note = st.text_input("Note / รายละเอียดเพิ่มเติม (ไม่บังคับ)", placeholder="ใส่รายละเอียด, ลิงก์, หรือหมายเหตุ...")
+    new_pic = c3.text_input("PIC (ผู้รับผิดชอบ)", placeholder="เช่น Ploy, Ae...")
+    new_due = c4.date_input("Due Date", value=today_th())
+    new_status = c5.selectbox("Status", STATUS_OPTIONS, format_func=lambda x: STATUS_LABELS[x])
+
+    n1, n2 = st.columns([7.6, 1.4])
+    new_note = n1.text_input("Note / รายละเอียดเพิ่มเติม (ไม่บังคับ)", placeholder="ใส่รายละเอียด, ลิงก์, หรือหมายเหตุ...")
+    n2.write("")
+    submitted = n2.form_submit_button("➕ เพิ่มงาน", type="primary", use_container_width=True)
 
     if submitted and new_task.strip():
         new_row = pd.DataFrame([{
             "id": str(uuid.uuid4())[:8],
             "Task": new_task.strip(),
             "Tag": new_tag,
+            "PIC": new_pic.strip(),
             "Due": new_due,
             "Status": new_status,
             "Note": new_note.strip(),
@@ -197,18 +213,21 @@ if page == "📋 Task List":
     if df_tasks.empty:
         st.info("ยังไม่มีงาน ลองเพิ่มงานจากช่องด้านบนได้เลยครับ")
     else:
+        pic_options = sorted([p for p in df_tasks["PIC"].unique() if str(p).strip()])
+
         # Filter & Search Bar
-        f1, f2, f3, f4 = st.columns([2.5, 2, 2, 1.8])
-        search_q = f1.text_input("🔍 ค้นหางาน / Note", placeholder="พิมพ์คำค้นหา...", label_visibility="collapsed")
+        f1, f2, f3, f4, f5 = st.columns([2.2, 1.6, 1.6, 1.6, 1.5])
+        search_q = f1.text_input("🔍 ค้นหา", placeholder="ค้นหางาน / PIC / Note...", label_visibility="collapsed")
         filter_tag = f2.multiselect("กรอง Tag", tag_list, placeholder="ทุก Tag", label_visibility="collapsed")
-        filter_status = f3.multiselect(
+        filter_pic = f3.multiselect("กรอง PIC", pic_options, placeholder="ทุก PIC", label_visibility="collapsed")
+        filter_status = f4.multiselect(
             "กรอง Status",
             STATUS_OPTIONS,
             format_func=lambda x: STATUS_LABELS[x],
             placeholder="ทุก Status",
             label_visibility="collapsed",
         )
-        edit_mode = f4.toggle("โหมดแก้ตารางใหญ่", value=False)
+        edit_mode = f5.toggle("แก้ตารางใหญ่", value=False)
 
         if edit_mode:
             edited = st.data_editor(
@@ -219,6 +238,7 @@ if page == "📋 Task List":
                     "id": None,
                     "Task": st.column_config.TextColumn("Task", required=True),
                     "Tag": st.column_config.SelectboxColumn("Tag", options=tag_list, required=True),
+                    "PIC": st.column_config.TextColumn("PIC"),
                     "Due": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD", required=True),
                     "Status": st.column_config.SelectboxColumn("Status", options=STATUS_OPTIONS, required=True),
                     "Note": st.column_config.TextColumn("Note"),
@@ -237,10 +257,13 @@ if page == "📋 Task List":
                 q = search_q.strip().lower()
                 view_df = view_df[
                     view_df["Task"].str.lower().str.contains(q, na=False)
+                    | view_df["PIC"].str.lower().str.contains(q, na=False)
                     | view_df["Note"].str.lower().str.contains(q, na=False)
                 ]
             if filter_tag:
                 view_df = view_df[view_df["Tag"].isin(filter_tag)]
+            if filter_pic:
+                view_df = view_df[view_df["PIC"].isin(filter_pic)]
             if filter_status:
                 view_df = view_df[view_df["EffStatus"].isin(filter_status)]
 
@@ -264,7 +287,7 @@ if page == "📋 Task List":
 
                 for _, row in group.iterrows():
                     tid = row["id"]
-                    r1, r2, r3, r4, r5, r6 = st.columns([0.4, 3.8, 1.5, 1.7, 0.7, 0.6])
+                    r1, r2, r_pic, r3, r4, r5, r6 = st.columns([0.4, 3.2, 1.3, 1.4, 1.6, 0.7, 0.6])
 
                     # 1. Quick Done Checkbox
                     is_done = row["Status"] == "Done"
@@ -280,11 +303,15 @@ if page == "📋 Task List":
                     if str(row["Note"]).strip():
                         r2.caption(f"📝 {row['Note']}")
 
-                    # 3. Due Date
+                    # 3. PIC
+                    pic_text = str(row["PIC"]).strip()
+                    r_pic.write(f"👤 {pic_text}" if pic_text else "-")
+
+                    # 4. Due Date
                     due_str = str(row["Due"]) if pd.notna(row["Due"]) else "-"
                     r3.write(f"📅 {due_str}")
 
-                    # 4. Quick Status Selector (Pending / Done / Late)
+                    # 5. Quick Status Selector (Pending / Done / Late)
                     eff_st = row["EffStatus"]
                     current_idx = STATUS_OPTIONS.index(eff_st) if eff_st in STATUS_OPTIONS else 0
                     chosen_st = r4.selectbox(
@@ -300,13 +327,14 @@ if page == "📋 Task List":
                         save_to_github(df_tasks, df_tags, f"Change status: {row['Task']} -> {chosen_st}")
                         st.rerun()
 
-                    # 5. Edit Popover (Task, Tag, Due, Status, Note)
+                    # 6. Edit Popover
                     with r5.popover("✏️", use_container_width=True):
                         with st.form(key=f"edit_form_{tid}"):
                             st.markdown("**แก้ไขรายละเอียดงาน**")
                             e_task = st.text_input("ชื่องาน", value=row["Task"])
                             tag_opts = tag_list if row["Tag"] in tag_list else tag_list + [row["Tag"]]
                             e_tag = st.selectbox("Tag", tag_opts, index=tag_opts.index(row["Tag"]))
+                            e_pic = st.text_input("PIC", value=row["PIC"])
                             e_due = st.date_input("Due Date", value=row["Due"] if pd.notna(row["Due"]) else today_th())
                             e_status = st.selectbox(
                                 "Status",
@@ -319,6 +347,7 @@ if page == "📋 Task List":
                                 mask = df_tasks["id"] == tid
                                 df_tasks.loc[mask, "Task"] = e_task.strip() or row["Task"]
                                 df_tasks.loc[mask, "Tag"] = e_tag
+                                df_tasks.loc[mask, "PIC"] = e_pic.strip()
                                 df_tasks.loc[mask, "Due"] = e_due
                                 df_tasks.loc[mask, "Status"] = e_status
                                 df_tasks.loc[mask, "Note"] = e_note.strip()
@@ -326,7 +355,7 @@ if page == "📋 Task List":
                                 st.toast("บันทึกการแก้ไขแล้ว ✅")
                                 st.rerun()
 
-                    # 6. Delete Button
+                    # 7. Delete Button
                     if r6.button("🗑️", key=f"del_{tid}", help="ลบงานนี้"):
                         df_tasks = df_tasks[df_tasks["id"] != tid].reset_index(drop=True)
                         save_to_github(df_tasks, df_tags, f"Delete task: {row['Task']}")
@@ -335,11 +364,15 @@ if page == "📋 Task List":
 
 # === PAGE 2: CALENDAR ===
 elif page == "📅 Calendar":
-    color_mode = st.radio(
+    opt1, opt2 = st.columns([5, 2])
+    color_mode = opt1.radio(
         "สีการ์ดในปฏิทิน",
         ["สีตาม Tag (Done เป็นสีเขียว)", "สีตาม Tag ทั้งหมด", "สีตาม Status (Done/Pending/Late)"],
         horizontal=True,
     )
+    opt2.write("")
+    show_pic_on_cal = opt2.checkbox("แสดงชื่อ PIC บนการ์ด", value=True)
+    st.caption("💡 ลากการ์ดไปวางวันอื่นเพื่อเลื่อน Due Date ได้เลย หรือคลิกที่การ์ดเพื่อแก้ไขรายละเอียด")
 
     events = []
     for _, row in df_tasks.iterrows():
@@ -347,6 +380,7 @@ elif page == "📅 Calendar":
             continue
         eff_st = get_effective_status(row)
         prefix = {"Done": "✓ ", "Late": "⚠️ ", "Pending": ""}[eff_st]
+        pic_str = f" [{row['PIC']}]" if show_pic_on_cal and str(row["PIC"]).strip() else ""
         note_icon = " 📝" if str(row["Note"]).strip() else ""
 
         if color_mode == "สีตาม Status (Done/Pending/Late)":
@@ -358,7 +392,7 @@ elif page == "📅 Calendar":
 
         events.append({
             "id": str(row["id"]),
-            "title": f"{prefix}{row['Task']}{note_icon}",
+            "title": f"{prefix}{row['Task']}{pic_str}{note_icon}",
             "start": str(row["Due"]),
             "allDay": True,
             "backgroundColor": bg,
@@ -369,6 +403,9 @@ elif page == "📅 Calendar":
     cal_options = {
         "initialView": "dayGridMonth",
         "initialDate": str(today_th()),
+        "editable": True,
+        "eventStartEditable": True,
+        "eventDurationEditable": False,
         "headerToolbar": {
             "left": "prev,next today",
             "center": "title",
@@ -380,11 +417,29 @@ elif page == "📅 Calendar":
     cal_state = calendar(
         events=events,
         options=cal_options,
-        key=f"main_calendar_{color_mode}_{st.session_state.data_ver}",
+        callbacks=["eventClick", "eventChange"],
+        key=f"main_calendar_{color_mode}_{show_pic_on_cal}_{st.session_state.data_ver}",
     )
 
-    # คลิกที่งานบนปฏิทินเพื่อดู Note / แก้ Status / แก้ไขได้ทันที
-    if cal_state and cal_state.get("eventClick"):
+    # ลากย้ายวันบนปฏิทิน -> อัปเดต Due Date ลง Task List & GitHub ทันที
+    if cal_state and cal_state.get("callback") == "eventChange":
+        changed_ev = cal_state.get("eventChange", {}).get("event", {})
+        changed_id = str(changed_ev.get("id", ""))
+        new_start = changed_ev.get("start")
+        if changed_id and new_start:
+            new_due = parse_cal_date(new_start)
+            mask = df_tasks["id"] == changed_id
+            if mask.any():
+                old_due = df_tasks.loc[mask, "Due"].iloc[0]
+                if old_due != new_due:
+                    task_name = df_tasks.loc[mask, "Task"].iloc[0]
+                    df_tasks.loc[mask, "Due"] = new_due
+                    save_to_github(df_tasks, df_tags, f"Move task '{task_name}' to {new_due}")
+                    st.toast(f"ย้าย '{task_name}' ไปวันที่ {new_due} แล้ว ✅")
+                    st.rerun()
+
+    # คลิกที่งานบนปฏิทินเพื่อดู Note / แก้ PIC / แก้ Status ได้ทันที
+    if cal_state and cal_state.get("callback") == "eventClick":
         clicked_id = cal_state["eventClick"]["event"].get("id")
         matched = df_tasks[df_tasks["id"] == str(clicked_id)]
         if not matched.empty:
@@ -392,13 +447,14 @@ elif page == "📅 Calendar":
             st.divider()
             st.subheader(f"✏️ จัดการงาน: {row['Task']}")
             with st.form(key=f"cal_edit_{clicked_id}"):
-                cc1, cc2, cc3, cc4 = st.columns([3, 2, 1.8, 1.8])
+                cc1, cc2, cc3, cc4, cc5 = st.columns([2.6, 1.6, 1.5, 1.5, 1.6])
                 ce_task = cc1.text_input("ชื่องาน", value=row["Task"])
                 tag_opts = tag_list if row["Tag"] in tag_list else tag_list + [row["Tag"]]
                 ce_tag = cc2.selectbox("Tag", tag_opts, index=tag_opts.index(row["Tag"]))
-                ce_due = cc3.date_input("Due Date", value=row["Due"] if pd.notna(row["Due"]) else today_th())
+                ce_pic = cc3.text_input("PIC", value=row["PIC"])
+                ce_due = cc4.date_input("Due Date", value=row["Due"] if pd.notna(row["Due"]) else today_th())
                 eff_st = get_effective_status(row)
-                ce_status = cc4.selectbox(
+                ce_status = cc5.selectbox(
                     "Status",
                     STATUS_OPTIONS,
                     index=STATUS_OPTIONS.index(eff_st),
@@ -414,6 +470,7 @@ elif page == "📅 Calendar":
                     mask = df_tasks["id"] == str(clicked_id)
                     df_tasks.loc[mask, "Task"] = ce_task.strip() or row["Task"]
                     df_tasks.loc[mask, "Tag"] = ce_tag
+                    df_tasks.loc[mask, "PIC"] = ce_pic.strip()
                     df_tasks.loc[mask, "Due"] = ce_due
                     df_tasks.loc[mask, "Status"] = ce_status
                     df_tasks.loc[mask, "Note"] = ce_note.strip()
