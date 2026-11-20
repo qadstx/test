@@ -3,3 +3,8 @@ selenium
 webdriver-manager
 pandas
 openpyxl
+streamlit
+pandas
+openpyxl
+requests
+streamlit-calendar
