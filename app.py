@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import io
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -54,6 +55,65 @@ STATUS_LABELS = {
     "Late": "🔴 Late",
 }
 STATUS_OPTIONS = ["Pending", "Done", "Late"]
+
+# ชุดสี 20 สีที่ตัดกันชัดเจนสำหรับสุ่มแจกให้แต่ละ PIC
+PIC_PALETTE = [
+    "#1F77B4", "#D62728", "#2CA02C", "#9467BD", "#E67E22",
+    "#16A085", "#E84393", "#2C3E50", "#8E44AD", "#C0392B",
+    "#2980B9", "#27AE60", "#D35400", "#008B8B", "#B8860B",
+    "#6C5CE7", "#00B894", "#E17055", "#0984E3", "#A29BFE",
+]
+
+
+# --- PIC Color & Split Helpers ---
+def split_pics(pic_str) -> list[str]:
+    if pd.isna(pic_str) or not str(pic_str).strip():
+        return []
+    return [p.strip() for p in str(pic_str).split(",") if p.strip()]
+
+
+def build_pic_color_map(df: pd.DataFrame) -> dict[str, str]:
+    unique_keys = sorted({p.upper() for val in df["PIC"] for p in split_pics(val)})
+    used_colors = set()
+    color_map = {}
+    for key in unique_keys:
+        base_idx = int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16) % len(PIC_PALETTE)
+        chosen = PIC_PALETTE[base_idx]
+        if chosen in used_colors and len(used_colors) < len(PIC_PALETTE):
+            for offset in range(1, len(PIC_PALETTE)):
+                cand = PIC_PALETTE[(base_idx + offset) % len(PIC_PALETTE)]
+                if cand not in used_colors:
+                    chosen = cand
+                    break
+        used_colors.add(chosen)
+        color_map[key] = chosen
+    return color_map
+
+
+def text_color_for_bg(hex_color: str) -> str:
+    try:
+        hex_color = str(hex_color).lstrip("#")
+        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+        luminance = (0.299 * r + 0.587 * g + 0.114 * b)
+        return "#000000" if luminance > 160 else "#FFFFFF"
+    except Exception:
+        return "#FFFFFF"
+
+
+def render_pic_badges(pic_str: str, pic_color_map: dict[str, str]) -> str:
+    names = split_pics(pic_str)
+    if not names:
+        return '<span style="color:#999;">-</span>'
+    pills = []
+    for name in names:
+        bg = pic_color_map.get(name.upper(), "#555555")
+        fg = text_color_for_bg(bg)
+        pills.append(
+            f'<span style="background:{bg};color:{fg};padding:2px 9px;border-radius:999px;'
+            f'font-size:0.8rem;font-weight:600;display:inline-block;margin:1px 4px 2px 0;">'
+            f'{name}</span>'
+        )
+    return "".join(pills)
 
 
 # --- Normalization & Sorting Helpers ---
@@ -149,16 +209,6 @@ def save_to_github(df_tasks: pd.DataFrame, df_tags: pd.DataFrame, commit_msg="Up
     st.session_state.data_ver = st.session_state.get("data_ver", 0) + 1
 
 
-def text_color_for_bg(hex_color: str) -> str:
-    try:
-        hex_color = str(hex_color).lstrip("#")
-        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
-        luminance = (0.299 * r + 0.587 * g + 0.114 * b)
-        return "#000000" if luminance > 160 else "#FFFFFF"
-    except Exception:
-        return "#FFFFFF"
-
-
 def get_effective_status(row) -> str:
     st_val = row["Status"]
     if st_val == "Done":
@@ -181,6 +231,8 @@ st.session_state.df_tasks = normalize_tasks(st.session_state.df_tasks)
 st.session_state.df_tags = normalize_tags(st.session_state.df_tags)
 if "data_ver" not in st.session_state:
     st.session_state.data_ver = 0
+if "active_page" not in st.session_state:
+    st.session_state.active_page = "📋 Task List"
 
 df_tasks = st.session_state.df_tasks
 df_tags = st.session_state.df_tags
@@ -189,6 +241,7 @@ tag_color_map = dict(zip(df_tags["Tag"], df_tags["Color"]))
 all_tag_list = df_tags["Tag"].tolist()
 active_tag_list = df_tags[~df_tags["Hidden"]]["Tag"].tolist()
 hidden_tag_set = set(df_tags[df_tags["Hidden"]]["Tag"].tolist())
+pic_color_map = build_pic_color_map(df_tasks)
 
 
 # --- Header & Quick Add Bar ---
@@ -209,7 +262,7 @@ with st.form("quick_add", clear_on_submit=True):
     new_task = c1.text_input("ชื่องาน (Task)", placeholder="เช่น AML V6, MT1, FA Submit...")
     add_tag_opts = active_tag_list if active_tag_list else (all_tag_list if all_tag_list else ["General"])
     new_tag = c2.selectbox("Tag", add_tag_opts)
-    new_pic = c3.text_input("PIC (ผู้รับผิดชอบ)", placeholder="เช่น Ploy, Ae...")
+    new_pic = c3.text_input("PIC (คั่นด้วย , ถ้าหลายคน)", placeholder="เช่น KWT หรือ RST,TNL")
     new_due = c4.date_input("Due Date", value=today_th())
     new_status = c5.selectbox("Status", STATUS_OPTIONS, format_func=lambda x: STATUS_LABELS[x])
 
@@ -236,13 +289,16 @@ with st.form("quick_add", clear_on_submit=True):
         st.rerun()
 
 
-# --- Main Navigation ---
-page = st.radio(
-    "เมนู",
-    ["📋 Task List", "📅 Calendar", "⚙️ Tag & Color Settings"],
-    horizontal=True,
-    label_visibility="collapsed",
-)
+# --- Main Navigation (Large Easy-to-Click Buttons) ---
+nav_items = ["📋 Task List", "📅 Calendar", "⚙️ Tag & Color Settings"]
+nav_cols = st.columns(3)
+for col, label in zip(nav_cols, nav_items):
+    btn_type = "primary" if st.session_state.active_page == label else "secondary"
+    if col.button(label, type=btn_type, use_container_width=True, key=f"nav_{label}"):
+        st.session_state.active_page = label
+        st.rerun()
+
+page = st.session_state.active_page
 st.divider()
 
 
@@ -251,7 +307,8 @@ if page == "📋 Task List":
     if df_tasks.empty:
         st.info("ยังไม่มีงาน ลองเพิ่มงานจากช่องด้านบนได้เลยครับ")
     else:
-        pic_options = sorted([p for p in df_tasks["PIC"].unique() if str(p).strip()])
+        # ดึงรายชื่อ PIC แบบแยกทีละคน (แยกจาก ,)
+        pic_options = sorted({p for val in df_tasks["PIC"] for p in split_pics(val)})
 
         # Row 1: Filter & Search Bar
         f1, f2, f3, f4 = st.columns([2.4, 1.8, 1.8, 1.8])
@@ -313,7 +370,10 @@ if page == "📋 Task List":
             if filter_tag:
                 view_df = view_df[view_df["Tag"].isin(filter_tag)]
             if filter_pic:
-                view_df = view_df[view_df["PIC"].isin(filter_pic)]
+                selected_upper = {p.upper() for p in filter_pic}
+                view_df = view_df[
+                    view_df["PIC"].apply(lambda val: any(p.upper() in selected_upper for p in split_pics(val)))
+                ]
             if filter_status:
                 view_df = view_df[view_df["EffStatus"].isin(filter_status)]
 
@@ -351,7 +411,7 @@ if page == "📋 Task List":
 
                 for _, row in group.iterrows():
                     tid = row["id"]
-                    r1, r2, r_pic, r3, r4, r5, r6 = st.columns([0.4, 3.2, 1.3, 1.4, 1.6, 0.7, 0.6])
+                    r1, r2, r_pic, r3, r4, r5, r6 = st.columns([0.4, 3.0, 1.5, 1.4, 1.6, 0.7, 0.6])
 
                     # 1. Quick Done Checkbox
                     is_done = row["Status"] == "Done"
@@ -367,9 +427,8 @@ if page == "📋 Task List":
                     if str(row["Note"]).strip():
                         r2.caption(f"📝 {row['Note']}")
 
-                    # 3. PIC
-                    pic_text = str(row["PIC"]).strip()
-                    r_pic.write(f"👤 {pic_text}" if pic_text else "-")
+                    # 3. PIC (Auto-colored badges, split by comma)
+                    r_pic.markdown(render_pic_badges(row["PIC"], pic_color_map), unsafe_allow_html=True)
 
                     # 4. Due Date
                     if pd.notna(row["Due"]):
@@ -400,7 +459,7 @@ if page == "📋 Task List":
                             e_task = st.text_input("ชื่องาน", value=row["Task"])
                             tag_opts = all_tag_list if row["Tag"] in all_tag_list else all_tag_list + [row["Tag"]]
                             e_tag = st.selectbox("Tag", tag_opts, index=tag_opts.index(row["Tag"]))
-                            e_pic = st.text_input("PIC", value=row["PIC"])
+                            e_pic = st.text_input("PIC (คั่นด้วย , ถ้าหลายคน)", value=row["PIC"])
                             e_no_due = st.checkbox("ยังไม่มีกำหนด (ไม่ใส่ Due)", value=pd.isna(row["Due"]))
                             e_due = st.date_input("Due Date", value=row["Due"] if pd.notna(row["Due"]) else today_th())
                             e_status = st.selectbox(
@@ -443,7 +502,7 @@ elif page == "📅 Calendar":
         f"แสดง Tag ที่ปิดจบแล้ว ({len(hidden_tag_set)})",
         value=False,
     )
-    st.caption("💡 ลากการ์ดไปวางวันอื่นเพื่อเลื่อน Due Date ได้เลย หรือคลิกที่การ์ดเพื่อแก้ไขรายละเอียด (งานที่ยังไม่กำหนด Due จะไม่แสดงบนปฏิทิน)")
+    st.caption("💡 ข้อความยาวจะขึ้นบรรทัดใหม่ให้อัตโนมัติ | ลากการ์ดเพื่อเลื่อนวัน | คลิกที่การ์ดเพื่อดู Note และแก้ไข | สลับเป็นมุมมอง Week/List ด้านขวาบนได้")
 
     events = []
     for _, row in df_tasks.iterrows():
@@ -485,14 +544,39 @@ elif page == "📅 Calendar":
         "headerToolbar": {
             "left": "prev,next today",
             "center": "title",
-            "right": "dayGridMonth,listMonth",
+            "right": "dayGridMonth,dayGridWeek,listMonth",
         },
-        "height": 680,
+        "height": "auto",
         "firstDay": 1,
     }
+
+    # CSS บังคับตัดบรรทัดข้อความในการ์ดปฏิทิน ไม่ให้โดนตัดขอบ
+    cal_custom_css = """
+        .fc-daygrid-event {
+            white-space: normal !important;
+            align-items: flex-start !important;
+            padding: 2px 4px !important;
+        }
+        .fc-event-main {
+            white-space: normal !important;
+            overflow: visible !important;
+        }
+        .fc-event-title, .fc-event-title-container {
+            white-space: normal !important;
+            word-break: break-word !important;
+            overflow-wrap: anywhere !important;
+            line-height: 1.25 !important;
+            font-size: 0.82rem !important;
+        }
+        .fc-daygrid-event-harness {
+            margin-bottom: 3px !important;
+        }
+    """
+
     cal_state = calendar(
         events=events,
         options=cal_options,
+        custom_css=cal_custom_css,
         callbacks=["eventClick", "eventChange"],
         key=f"cal_{color_mode}_{show_pic_on_cal}_{hide_done_cal}_{show_hidden_tags_cal}_{st.session_state.data_ver}",
     )
@@ -527,7 +611,7 @@ elif page == "📅 Calendar":
                 ce_task = cc1.text_input("ชื่องาน", value=row["Task"])
                 tag_opts = all_tag_list if row["Tag"] in all_tag_list else all_tag_list + [row["Tag"]]
                 ce_tag = cc2.selectbox("Tag", tag_opts, index=tag_opts.index(row["Tag"]))
-                ce_pic = cc3.text_input("PIC", value=row["PIC"])
+                ce_pic = cc3.text_input("PIC (คั่นด้วย , ถ้าหลายคน)", value=row["PIC"])
                 ce_due = cc4.date_input("Due Date", value=row["Due"] if pd.notna(row["Due"]) else today_th())
                 eff_st = get_effective_status(row)
                 ce_status = cc5.selectbox(
