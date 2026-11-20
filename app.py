@@ -135,8 +135,13 @@ with st.form("quick_add", clear_on_submit=True):
         st.rerun()
 
 
-# --- Main Tabs ---
-tab_list, tab_cal, tab_set = st.tabs(["📋 Task List", "📅 Calendar", "⚙️ Tag & Color Settings"])
+# --- Main Navigation ---
+page = st.radio(
+    "เมนู",
+    ["📋 Task List", "📅 Calendar", "⚙️ Tag & Color Settings"],
+    horizontal=True,
+    label_visibility="collapsed",
+)
 
 
 # === TAB 1: TASK LIST (Grouped by Tag, Sorted by Due) ===
