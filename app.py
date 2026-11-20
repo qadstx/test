@@ -11,6 +11,22 @@ from streamlit_calendar import calendar
 
 st.set_page_config(page_title="Task & Calendar", page_icon="📅", layout="wide")
 
+# --- Global CSS (Red Frame for Urgent Tasks) ---
+st.markdown(
+    """
+    <style>
+    [class*="st-key-urgent_card_"],
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.urgent-marker) {
+        border: 2.5px solid #E74C3C !important;
+        background-color: rgba(231, 76, 60, 0.08) !important;
+        border-radius: 10px !important;
+        box-shadow: 0 2px 8px rgba(231, 76, 60, 0.18) !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # --- Timezone (Thailand UTC+7) ---
 TH_TZ = timezone(timedelta(hours=7))
 
@@ -45,7 +61,7 @@ DEFAULT_TAGS = pd.DataFrame([
     {"Tag": "FA Submit", "Color": "#E74C3C", "Hidden": False},
     {"Tag": "General", "Color": "#2980B9", "Hidden": False},
 ])
-TASK_COLUMNS = ["id", "Task", "Tag", "PIC", "Due", "Status", "Note"]
+TASK_COLUMNS = ["id", "Task", "Tag", "PIC", "Due", "Status", "Urgent", "Note"]
 TAG_COLUMNS = ["Tag", "Color", "Hidden"]
 EMPTY_TASKS = pd.DataFrame(columns=TASK_COLUMNS)
 
@@ -56,7 +72,6 @@ STATUS_LABELS = {
 }
 STATUS_OPTIONS = ["Pending", "Done", "Late"]
 
-# ชุดสี 20 สีที่ตัดกันชัดเจนสำหรับสุ่มแจกให้แต่ละ PIC
 PIC_PALETTE = [
     "#1F77B4", "#D62728", "#2CA02C", "#9467BD", "#E67E22",
     "#16A085", "#E84393", "#2C3E50", "#8E44AD", "#C0392B",
@@ -116,11 +131,20 @@ def render_pic_badges(pic_str: str, pic_color_map: dict[str, str]) -> str:
     return "".join(pills)
 
 
-# --- Normalization & Sorting Helpers ---
+# --- Normalization, Sorting & Tag Order Helpers ---
+def to_bool(val) -> bool:
+    return str(val).strip().lower() in ["true", "1", "yes"]
+
+
 def normalize_tasks(df: pd.DataFrame) -> pd.DataFrame:
     for col in TASK_COLUMNS:
         if col not in df.columns:
-            df[col] = None if col == "Due" else ""
+            if col == "Due":
+                df[col] = None
+            elif col == "Urgent":
+                df[col] = False
+            else:
+                df[col] = ""
     df = df[TASK_COLUMNS].copy()
     if not df.empty:
         due_dt = pd.to_datetime(df["Due"], errors="coerce")
@@ -130,18 +154,18 @@ def normalize_tasks(df: pd.DataFrame) -> pd.DataFrame:
         df["Tag"] = df["Tag"].fillna("General").astype(str)
         df["PIC"] = df["PIC"].fillna("").astype(str)
         df["Status"] = df["Status"].fillna("Pending").astype(str)
+        df["Urgent"] = df["Urgent"].fillna(False).apply(to_bool)
         df["Note"] = df["Note"].fillna("").astype(str)
     return df
 
 
-def sort_by_due(df: pd.DataFrame) -> pd.DataFrame:
+def sort_tasks(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-    return df.sort_values(
-        "Due",
-        key=lambda s: pd.to_datetime(s, errors="coerce"),
-        na_position="last",
-    )
+    temp = df.copy()
+    temp["_urg_sort"] = ~((temp["Urgent"] == True) & (temp["Status"] != "Done"))
+    temp["_due_sort"] = pd.to_datetime(temp["Due"], errors="coerce")
+    return temp.sort_values(["_urg_sort", "_due_sort"], na_position="last").drop(columns=["_urg_sort", "_due_sort"])
 
 
 def normalize_tags(df: pd.DataFrame) -> pd.DataFrame:
@@ -157,8 +181,36 @@ def normalize_tags(df: pd.DataFrame) -> pd.DataFrame:
     df = df[TAG_COLUMNS].copy()
     df["Tag"] = df["Tag"].fillna("").astype(str)
     df["Color"] = df["Color"].fillna("#3498DB").astype(str)
-    df["Hidden"] = df["Hidden"].fillna(False).apply(lambda x: str(x).strip().lower() in ["true", "1", "yes"])
+    df["Hidden"] = df["Hidden"].fillna(False).apply(to_bool)
     return df.reset_index(drop=True)
+
+
+def move_tag_order(df: pd.DataFrame, tag_name: str, direction: str) -> pd.DataFrame:
+    matches = df.index[df["Tag"] == tag_name].tolist()
+    if not matches:
+        return df
+    i = matches[0]
+    if direction == "top" and i > 0:
+        return pd.concat([df.iloc[[i]], df.drop(index=i)], ignore_index=True)
+    if direction == "up" and i > 0:
+        order = list(range(len(df)))
+        order[i - 1], order[i] = order[i], order[i - 1]
+        return df.iloc[order].reset_index(drop=True)
+    if direction == "down" and i < len(df) - 1:
+        order = list(range(len(df)))
+        order[i + 1], order[i] = order[i], order[i + 1]
+        return df.iloc[order].reset_index(drop=True)
+    return df
+
+
+def swap_two_tags(df: pd.DataFrame, tag_a: str, tag_b: str) -> pd.DataFrame:
+    ia = df.index[df["Tag"] == tag_a].tolist()
+    ib = df.index[df["Tag"] == tag_b].tolist()
+    if not ia or not ib:
+        return df
+    order = list(range(len(df)))
+    order[ia[0]], order[ib[0]] = order[ib[0]], order[ia[0]]
+    return df.iloc[order].reset_index(drop=True)
 
 
 # --- GitHub Read / Write Functions ---
@@ -259,15 +311,17 @@ with col_sync:
 
 with st.form("quick_add", clear_on_submit=True):
     c1, c2, c3, c4, c5 = st.columns([3.0, 1.6, 1.5, 1.5, 1.4])
-    new_task = c1.text_input("ชื่องาน (Task)", placeholder="เช่น AML V6, MT1, FA Submit...")
+    new_task = c1.text_input("ชื่องาน (Task)")
     add_tag_opts = active_tag_list if active_tag_list else (all_tag_list if all_tag_list else ["General"])
     new_tag = c2.selectbox("Tag", add_tag_opts)
-    new_pic = c3.text_input("PIC (คั่นด้วย , ถ้าหลายคน)", placeholder="เช่น KWT หรือ RST,TNL")
+    new_pic = c3.text_input("PIC (คั่นด้วย , ถ้าหลายคน)")
     new_due = c4.date_input("Due Date", value=today_th())
     new_status = c5.selectbox("Status", STATUS_OPTIONS, format_func=lambda x: STATUS_LABELS[x])
 
-    n1, n2, n3 = st.columns([5.6, 2.0, 1.4])
-    new_note = n1.text_input("Note / รายละเอียดเพิ่มเติม (ไม่บังคับ)", placeholder="ใส่รายละเอียด, ลิงก์, หรือหมายเหตุ...")
+    n1, n_urg, n2, n3 = st.columns([4.6, 1.1, 1.9, 1.4])
+    new_note = n1.text_input("Note / รายละเอียดเพิ่มเติม (ไม่บังคับ)")
+    n_urg.write("")
+    new_urgent = n_urg.checkbox("🔥 Urgent", value=False)
     n2.write("")
     no_due = n2.checkbox("ยังไม่มีกำหนด (ไม่ใส่ Due)", value=False)
     n3.write("")
@@ -281,6 +335,7 @@ with st.form("quick_add", clear_on_submit=True):
             "PIC": new_pic.strip(),
             "Due": None if no_due else new_due,
             "Status": new_status,
+            "Urgent": new_urgent,
             "Note": new_note.strip(),
         }])
         updated_tasks = pd.concat([df_tasks, new_row], ignore_index=True)
@@ -289,7 +344,7 @@ with st.form("quick_add", clear_on_submit=True):
         st.rerun()
 
 
-# --- Main Navigation (Large Easy-to-Click Buttons) ---
+# --- Main Navigation ---
 nav_items = ["📋 Task List", "📅 Calendar", "⚙️ Tag & Color Settings"]
 nav_cols = st.columns(3)
 for col, label in zip(nav_cols, nav_items):
@@ -307,7 +362,6 @@ if page == "📋 Task List":
     if df_tasks.empty:
         st.info("ยังไม่มีงาน ลองเพิ่มงานจากช่องด้านบนได้เลยครับ")
     else:
-        # ดึงรายชื่อ PIC แบบแยกทีละคน (แยกจาก ,)
         pic_options = sorted({p for val in df_tasks["PIC"] for p in split_pics(val)})
 
         # Row 1: Filter & Search Bar
@@ -324,8 +378,9 @@ if page == "📋 Task List":
         )
 
         # Row 2: Hide / Show Toggles
-        t1, t2, t3, _ = st.columns([1.8, 2.2, 1.6, 2.4])
+        t1, t_urg, t2, t3, _ = st.columns([1.6, 1.4, 2.2, 1.5, 1.3])
         hide_done = t1.checkbox("ซ่อนงานที่ Done แล้ว", value=False)
+        only_urgent = t_urg.checkbox("🔥 เฉพาะ Urgent", value=False)
         show_hidden_tags = t2.checkbox(
             f"แสดง Tag ที่ปิดจบแล้ว ({len(hidden_tag_set)})",
             value=False,
@@ -334,7 +389,7 @@ if page == "📋 Task List":
 
         if edit_mode:
             edited = st.data_editor(
-                sort_by_due(df_tasks),
+                sort_tasks(df_tasks),
                 num_rows="dynamic",
                 use_container_width=True,
                 column_config={
@@ -344,6 +399,7 @@ if page == "📋 Task List":
                     "PIC": st.column_config.TextColumn("PIC"),
                     "Due": st.column_config.DateColumn("Due Date", format="YYYY-MM-DD", required=False),
                     "Status": st.column_config.SelectboxColumn("Status", options=STATUS_OPTIONS, required=True),
+                    "Urgent": st.column_config.CheckboxColumn("🔥 Urgent"),
                     "Note": st.column_config.TextColumn("Note"),
                 },
             )
@@ -358,6 +414,8 @@ if page == "📋 Task List":
 
             if hide_done:
                 view_df = view_df[view_df["Status"] != "Done"]
+            if only_urgent:
+                view_df = view_df[view_df["Urgent"] == True]
             if not show_hidden_tags and not filter_tag:
                 view_df = view_df[~view_df["Tag"].isin(hidden_tag_set)]
             if search_q.strip():
@@ -381,17 +439,16 @@ if page == "📋 Task List":
                 st.warning("ไม่พบงานตามเงื่อนไขที่กรองไว้")
 
             all_tags_ordered = all_tag_list + [t for t in view_df["Tag"].unique() if t not in all_tag_list]
-            for tag_name in all_tags_ordered:
-                group = sort_by_due(view_df[view_df["Tag"] == tag_name])
-                if group.empty:
-                    continue
+            visible_tags = [t for t in all_tags_ordered if not view_df[view_df["Tag"] == t].empty]
 
+            for v_idx, tag_name in enumerate(visible_tags):
+                group = sort_tasks(view_df[view_df["Tag"] == tag_name])
                 is_tag_hidden = tag_name in hidden_tag_set
                 bg = tag_color_map.get(tag_name, "#555555")
                 fg = text_color_for_bg(bg)
                 archived_badge = " 📦 ปิดจบแล้ว" if is_tag_hidden else ""
 
-                h1, h2 = st.columns([7, 1.5])
+                h1, h_up, h_dn, h2 = st.columns([6.3, 0.5, 0.5, 1.5])
                 h1.markdown(
                     f'<div style="background:{bg};color:{fg};padding:6px 14px;border-radius:6px;'
                     f'font-weight:700;margin-top:10px;margin-bottom:6px;display:inline-block;'
@@ -399,8 +456,27 @@ if page == "📋 Task List":
                     f'{tag_name} ({len(group)}){archived_badge}</div>',
                     unsafe_allow_html=True,
                 )
-                if tag_name in df_tags["Tag"].values:
-                    btn_label = "🔓 เปิด Tag" if is_tag_hidden else "📦 ปิดจบ/ซ่อน Tag"
+
+                in_tag_table = tag_name in df_tags["Tag"].values
+                if in_tag_table:
+                    h_up.write("")
+                    if h_up.button("⬆️", key=f"up_list_{tag_name}", disabled=(v_idx == 0), help="ขยับ Tag ขึ้น"):
+                        df_tags = swap_two_tags(df_tags, tag_name, visible_tags[v_idx - 1])
+                        save_to_github(df_tasks, df_tags, f"Move tag up: {tag_name}")
+                        st.rerun()
+
+                    h_dn.write("")
+                    if h_dn.button(
+                        "⬇️",
+                        key=f"dn_list_{tag_name}",
+                        disabled=(v_idx == len(visible_tags) - 1),
+                        help="ขยับ Tag ลง",
+                    ):
+                        df_tags = swap_two_tags(df_tags, tag_name, visible_tags[v_idx + 1])
+                        save_to_github(df_tasks, df_tags, f"Move tag down: {tag_name}")
+                        st.rerun()
+
+                    btn_label = "🔓 เปิด Tag" if is_tag_hidden else "📦 ปิดจบ/ซ่อน"
                     h2.write("")
                     if h2.button(btn_label, key=f"arch_tag_{tag_name}", use_container_width=True):
                         df_tags.loc[df_tags["Tag"] == tag_name, "Hidden"] = not is_tag_hidden
@@ -411,81 +487,124 @@ if page == "📋 Task List":
 
                 for _, row in group.iterrows():
                     tid = row["id"]
-                    r1, r2, r_pic, r3, r4, r5, r6 = st.columns([0.4, 3.0, 1.5, 1.4, 1.6, 0.7, 0.6])
-
-                    # 1. Quick Done Checkbox
                     is_done = row["Status"] == "Done"
-                    checked = r1.checkbox("", value=is_done, key=f"chk_{tid}", label_visibility="collapsed")
-                    if checked != is_done:
-                        df_tasks.loc[df_tasks["id"] == tid, "Status"] = "Done" if checked else "Pending"
-                        save_to_github(df_tasks, df_tags, f"Toggle status: {row['Task']}")
-                        st.rerun()
+                    is_urgent = bool(row["Urgent"])
+                    highlight_urgent = is_urgent and not is_done
 
-                    # 2. Task Name + Note Preview
-                    task_label = f"~~{row['Task']}~~" if is_done else f"**{row['Task']}**"
-                    r2.markdown(task_label)
-                    if str(row["Note"]).strip():
-                        r2.caption(f"📝 {row['Note']}")
-
-                    # 3. PIC (Auto-colored badges, split by comma)
-                    r_pic.markdown(render_pic_badges(row["PIC"], pic_color_map), unsafe_allow_html=True)
-
-                    # 4. Due Date
-                    if pd.notna(row["Due"]):
-                        r3.write(f"📅 {row['Due']}")
-                    else:
-                        r3.caption("📅 ไม่มีกำหนด")
-
-                    # 5. Quick Status Selector
-                    eff_st = row["EffStatus"]
-                    current_idx = STATUS_OPTIONS.index(eff_st) if eff_st in STATUS_OPTIONS else 0
-                    chosen_st = r4.selectbox(
-                        "Status",
-                        STATUS_OPTIONS,
-                        index=current_idx,
-                        format_func=lambda x: STATUS_LABELS[x],
-                        key=f"st_{tid}_{st.session_state.data_ver}",
-                        label_visibility="collapsed",
+                    row_box = (
+                        st.container(border=True, key=f"urgent_card_{tid}")
+                        if highlight_urgent
+                        else st.container()
                     )
-                    if chosen_st != eff_st:
-                        df_tasks.loc[df_tasks["id"] == tid, "Status"] = chosen_st
-                        save_to_github(df_tasks, df_tags, f"Change status: {row['Task']} -> {chosen_st}")
-                        st.rerun()
 
-                    # 6. Edit Popover
-                    with r5.popover("✏️", use_container_width=True):
-                        with st.form(key=f"edit_form_{tid}"):
-                            st.markdown("**แก้ไขรายละเอียดงาน**")
-                            e_task = st.text_input("ชื่องาน", value=row["Task"])
-                            tag_opts = all_tag_list if row["Tag"] in all_tag_list else all_tag_list + [row["Tag"]]
-                            e_tag = st.selectbox("Tag", tag_opts, index=tag_opts.index(row["Tag"]))
-                            e_pic = st.text_input("PIC (คั่นด้วย , ถ้าหลายคน)", value=row["PIC"])
-                            e_no_due = st.checkbox("ยังไม่มีกำหนด (ไม่ใส่ Due)", value=pd.isna(row["Due"]))
-                            e_due = st.date_input("Due Date", value=row["Due"] if pd.notna(row["Due"]) else today_th())
-                            e_status = st.selectbox(
-                                "Status",
-                                STATUS_OPTIONS,
-                                index=STATUS_OPTIONS.index(row["Status"]) if row["Status"] in STATUS_OPTIONS else 0,
-                                format_func=lambda x: STATUS_LABELS[x],
+                    with row_box:
+                        if highlight_urgent:
+                            st.markdown('<div class="urgent-marker" style="display:none;"></div>', unsafe_allow_html=True)
+
+                        r1, r_urg, r2, r_pic, r3, r4, r5, r6 = st.columns([0.4, 0.65, 2.9, 1.4, 1.3, 1.5, 0.6, 0.5])
+
+                        # 1. Done Checkbox
+                        checked = r1.checkbox(
+                            "",
+                            value=is_done,
+                            key=f"chk_{tid}",
+                            label_visibility="collapsed",
+                            help="ติ๊กเมื่อเสร็จแล้ว (Done)",
+                        )
+                        if checked != is_done:
+                            df_tasks.loc[df_tasks["id"] == tid, "Status"] = "Done" if checked else "Pending"
+                            save_to_github(df_tasks, df_tags, f"Toggle status: {row['Task']}")
+                            st.rerun()
+
+                        # 2. Urgent Checkbox
+                        urg_checked = r_urg.checkbox(
+                            "🔥",
+                            value=is_urgent,
+                            key=f"urg_{tid}",
+                            help="ติ๊กถ้าเป็นงานด่วน (Urgent)",
+                        )
+                        if urg_checked != is_urgent:
+                            df_tasks.loc[df_tasks["id"] == tid, "Urgent"] = urg_checked
+                            save_to_github(df_tasks, df_tags, f"Toggle urgent: {row['Task']}")
+                            st.rerun()
+
+                        # 3. Task Name + Urgent Badge + Note
+                        if is_done:
+                            r2.markdown(f"~~{row['Task']}~~")
+                        elif is_urgent:
+                            r2.markdown(
+                                f'<span style="background:#E74C3C;color:#FFFFFF;padding:1px 7px;'
+                                f'border-radius:4px;font-size:0.72rem;font-weight:700;margin-right:6px;">'
+                                f'URGENT</span><strong style="color:#C0392B;">{row["Task"]}</strong>',
+                                unsafe_allow_html=True,
                             )
-                            e_note = st.text_area("Note", value=row["Note"], height=90)
-                            if st.form_submit_button("💾 บันทึก", type="primary", use_container_width=True):
-                                mask = df_tasks["id"] == tid
-                                df_tasks.loc[mask, "Task"] = e_task.strip() or row["Task"]
-                                df_tasks.loc[mask, "Tag"] = e_tag
-                                df_tasks.loc[mask, "PIC"] = e_pic.strip()
-                                df_tasks.loc[mask, "Due"] = None if e_no_due else e_due
-                                df_tasks.loc[mask, "Status"] = e_status
-                                df_tasks.loc[mask, "Note"] = e_note.strip()
-                                save_to_github(df_tasks, df_tags, f"Edit task: {e_task.strip()}")
-                                st.toast("บันทึกการแก้ไขแล้ว ✅")
-                                st.rerun()
+                        else:
+                            r2.markdown(f"**{row['Task']}**")
 
-                    # 7. Delete Button
-                    if r6.button("🗑️", key=f"del_{tid}", help="ลบงานนี้"):
-                        df_tasks = df_tasks[df_tasks["id"] != tid].reset_index(drop=True)
-                        save_to_github(df_tasks, df_tags, f"Delete task: {row['Task']}")
-                        st.rerun()
+                        if str(row["Note"]).strip():
+                            r2.caption(f"📝 {row['Note']}")
+
+                        # 4. PIC (Auto-colored badges, split by comma)
+                        r_pic.markdown(render_pic_badges(row["PIC"], pic_color_map), unsafe_allow_html=True)
+
+                        # 5. Due Date
+                        if pd.notna(row["Due"]):
+                            r3.write(f"📅 {row['Due']}")
+                        else:
+                            r3.caption("📅 ไม่มีกำหนด")
+
+                        # 6. Quick Status Selector
+                        eff_st = row["EffStatus"]
+                        current_idx = STATUS_OPTIONS.index(eff_st) if eff_st in STATUS_OPTIONS else 0
+                        chosen_st = r4.selectbox(
+                            "Status",
+                            STATUS_OPTIONS,
+                            index=current_idx,
+                            format_func=lambda x: STATUS_LABELS[x],
+                            key=f"st_{tid}_{st.session_state.data_ver}",
+                            label_visibility="collapsed",
+                        )
+                        if chosen_st != eff_st:
+                            df_tasks.loc[df_tasks["id"] == tid, "Status"] = chosen_st
+                            save_to_github(df_tasks, df_tags, f"Change status: {row['Task']} -> {chosen_st}")
+                            st.rerun()
+
+                        # 7. Edit Popover
+                        with r5.popover("✏️", use_container_width=True):
+                            with st.form(key=f"edit_form_{tid}"):
+                                st.markdown("**แก้ไขรายละเอียดงาน**")
+                                e_task = st.text_input("ชื่องาน", value=row["Task"])
+                                tag_opts = all_tag_list if row["Tag"] in all_tag_list else all_tag_list + [row["Tag"]]
+                                e_tag = st.selectbox("Tag", tag_opts, index=tag_opts.index(row["Tag"]))
+                                e_pic = st.text_input("PIC (คั่นด้วย , ถ้าหลายคน)", value=row["PIC"])
+                                e_urgent = st.checkbox("🔥 Urgent", value=is_urgent)
+                                e_no_due = st.checkbox("ยังไม่มีกำหนด (ไม่ใส่ Due)", value=pd.isna(row["Due"]))
+                                e_due = st.date_input("Due Date", value=row["Due"] if pd.notna(row["Due"]) else today_th())
+                                e_status = st.selectbox(
+                                    "Status",
+                                    STATUS_OPTIONS,
+                                    index=STATUS_OPTIONS.index(row["Status"]) if row["Status"] in STATUS_OPTIONS else 0,
+                                    format_func=lambda x: STATUS_LABELS[x],
+                                )
+                                e_note = st.text_area("Note", value=row["Note"], height=90)
+                                if st.form_submit_button("💾 บันทึก", type="primary", use_container_width=True):
+                                    mask = df_tasks["id"] == tid
+                                    df_tasks.loc[mask, "Task"] = e_task.strip() or row["Task"]
+                                    df_tasks.loc[mask, "Tag"] = e_tag
+                                    df_tasks.loc[mask, "PIC"] = e_pic.strip()
+                                    df_tasks.loc[mask, "Urgent"] = e_urgent
+                                    df_tasks.loc[mask, "Due"] = None if e_no_due else e_due
+                                    df_tasks.loc[mask, "Status"] = e_status
+                                    df_tasks.loc[mask, "Note"] = e_note.strip()
+                                    save_to_github(df_tasks, df_tags, f"Edit task: {e_task.strip()}")
+                                    st.toast("บันทึกการแก้ไขแล้ว ✅")
+                                    st.rerun()
+
+                        # 8. Delete Button
+                        if r6.button("🗑️", key=f"del_{tid}", help="ลบงานนี้"):
+                            df_tasks = df_tasks[df_tasks["id"] != tid].reset_index(drop=True)
+                            save_to_github(df_tasks, df_tags, f"Delete task: {row['Task']}")
+                            st.rerun()
 
 
 # === PAGE 2: CALENDAR ===
@@ -514,6 +633,8 @@ elif page == "📅 Calendar":
             continue
 
         eff_st = get_effective_status(row)
+        is_urg_active = bool(row["Urgent"]) and eff_st != "Done"
+        urg_prefix = "🔥 " if is_urg_active else ""
         prefix = {"Done": "✓ ", "Late": "⚠️ ", "Pending": ""}[eff_st]
         pic_str = f" [{row['PIC']}]" if show_pic_on_cal and str(row["PIC"]).strip() else ""
         note_icon = " 📝" if str(row["Note"]).strip() else ""
@@ -525,15 +646,18 @@ elif page == "📅 Calendar":
         else:
             bg = tag_color_map.get(row["Tag"], "#3788D8")
 
-        events.append({
+        ev = {
             "id": str(row["id"]),
-            "title": f"{prefix}{row['Task']}{pic_str}{note_icon}",
+            "title": f"{urg_prefix}{prefix}{row['Task']}{pic_str}{note_icon}",
             "start": str(row["Due"]),
             "allDay": True,
             "backgroundColor": bg,
-            "borderColor": bg,
+            "borderColor": "#FF0000" if is_urg_active else bg,
             "textColor": text_color_for_bg(bg),
-        })
+        }
+        if is_urg_active:
+            ev["classNames"] = ["urgent-cal-event"]
+        events.append(ev)
 
     cal_options = {
         "initialView": "dayGridMonth",
@@ -550,7 +674,6 @@ elif page == "📅 Calendar":
         "firstDay": 1,
     }
 
-    # CSS บังคับตัดบรรทัดข้อความในการ์ดปฏิทิน ไม่ให้โดนตัดขอบ
     cal_custom_css = """
         .fc-daygrid-event {
             white-space: normal !important;
@@ -570,6 +693,11 @@ elif page == "📅 Calendar":
         }
         .fc-daygrid-event-harness {
             margin-bottom: 3px !important;
+        }
+        .urgent-cal-event {
+            border: 2.5px solid #FF0000 !important;
+            box-shadow: 0 0 6px rgba(255, 0, 0, 0.45) !important;
+            font-weight: 700 !important;
         }
     """
 
@@ -598,7 +726,7 @@ elif page == "📅 Calendar":
                     st.toast(f"ย้าย '{task_name}' ไปวันที่ {new_due} แล้ว ✅")
                     st.rerun()
 
-    # คลิกที่งานบนปฏิทินเพื่อดู Note / แก้ PIC / แก้ Status / ถอด Due ได้ทันที
+    # คลิกที่งานบนปฏิทินเพื่อแก้ไขรายละเอียด
     if cal_state and cal_state.get("callback") == "eventClick":
         clicked_id = cal_state["eventClick"]["event"].get("id")
         matched = df_tasks[df_tasks["id"] == str(clicked_id)]
@@ -620,7 +748,9 @@ elif page == "📅 Calendar":
                     index=STATUS_OPTIONS.index(eff_st),
                     format_func=lambda x: STATUS_LABELS[x],
                 )
-                ce_no_due = st.checkbox("เอา Due Date ออก (ยังไม่มีกำหนด)", value=pd.isna(row["Due"]))
+                cb1, cb2, _ = st.columns([1.4, 2.4, 4.2])
+                ce_urgent = cb1.checkbox("🔥 Urgent", value=bool(row["Urgent"]))
+                ce_no_due = cb2.checkbox("เอา Due Date ออก (ยังไม่มีกำหนด)", value=pd.isna(row["Due"]))
                 ce_note = st.text_area("Note", value=row["Note"], height=80)
 
                 b1, b2, _ = st.columns([1.5, 1.2, 5])
@@ -632,6 +762,7 @@ elif page == "📅 Calendar":
                     df_tasks.loc[mask, "Task"] = ce_task.strip() or row["Task"]
                     df_tasks.loc[mask, "Tag"] = ce_tag
                     df_tasks.loc[mask, "PIC"] = ce_pic.strip()
+                    df_tasks.loc[mask, "Urgent"] = ce_urgent
                     df_tasks.loc[mask, "Due"] = None if ce_no_due else ce_due
                     df_tasks.loc[mask, "Status"] = ce_status
                     df_tasks.loc[mask, "Note"] = ce_note.strip()
@@ -648,7 +779,7 @@ elif page == "📅 Calendar":
 
 # === PAGE 3: TAG & COLOR SETTINGS ===
 elif page == "⚙️ Tag & Color Settings":
-    st.subheader("เพิ่ม / แก้ไขสี / ปิดจบ Tag")
+    st.subheader("เพิ่ม / แก้ไขสี / จัดลำดับ / ปิดจบ Tag")
     with st.form("add_tag_form", clear_on_submit=True):
         s1, s2, s3 = st.columns([3, 1, 1.5])
         t_name = s1.text_input("ชื่อ Tag")
@@ -669,30 +800,47 @@ elif page == "⚙️ Tag & Color Settings":
             st.rerun()
 
     st.divider()
+    total_tags = len(df_tags)
     for idx, row in df_tags.iterrows():
-        c1, c2, c3, c4 = st.columns([3, 1.2, 1.6, 0.8])
+        c_ord, c1, c2, c3, c4 = st.columns([1.6, 2.6, 1.0, 1.5, 0.8])
+        tag_name = row["Tag"]
+
+        o1, o2, o3 = c_ord.columns(3)
+        if o1.button("⏫", key=f"top_tag_{idx}_{tag_name}", disabled=(idx == 0), help="ดันขึ้นบนสุด"):
+            df_tags = move_tag_order(df_tags, tag_name, "top")
+            save_to_github(df_tasks, df_tags, f"Move tag to top: {tag_name}")
+            st.rerun()
+        if o2.button("⬆️", key=f"up_tag_{idx}_{tag_name}", disabled=(idx == 0), help="เลื่อนขึ้น"):
+            df_tags = move_tag_order(df_tags, tag_name, "up")
+            save_to_github(df_tasks, df_tags, f"Move tag up: {tag_name}")
+            st.rerun()
+        if o3.button("⬇️", key=f"dn_tag_{idx}_{tag_name}", disabled=(idx == total_tags - 1), help="เลื่อนลง"):
+            df_tags = move_tag_order(df_tags, tag_name, "down")
+            save_to_github(df_tasks, df_tags, f"Move tag down: {tag_name}")
+            st.rerun()
+
         bg = row["Color"]
         fg = text_color_for_bg(bg)
         is_hidden = bool(row["Hidden"])
-        badge_txt = f"{row['Tag']} (ปิดจบ/ซ่อน)" if is_hidden else row["Tag"]
+        badge_txt = f"{tag_name} (ปิดจบ/ซ่อน)" if is_hidden else tag_name
         c1.markdown(
             f'<span style="background:{bg};color:{fg};padding:5px 14px;border-radius:6px;'
             f'font-weight:600;opacity:{"0.55" if is_hidden else "1"};">{badge_txt}</span>',
             unsafe_allow_html=True,
         )
-        new_c = c2.color_picker("", bg, key=f"cp_{idx}_{row['Tag']}", label_visibility="collapsed")
+        new_c = c2.color_picker("", bg, key=f"cp_{idx}_{tag_name}", label_visibility="collapsed")
         if new_c != bg:
             df_tags.loc[idx, "Color"] = new_c
-            save_to_github(df_tasks, df_tags, f"Change color: {row['Tag']}")
+            save_to_github(df_tasks, df_tags, f"Change color: {tag_name}")
             st.rerun()
 
         toggle_label = "🔓 เปิดใช้งาน" if is_hidden else "📦 ปิดจบ/ซ่อน"
-        if c3.button(toggle_label, key=f"hide_tag_{idx}_{row['Tag']}", use_container_width=True):
+        if c3.button(toggle_label, key=f"hide_tag_{idx}_{tag_name}", use_container_width=True):
             df_tags.loc[idx, "Hidden"] = not is_hidden
-            save_to_github(df_tasks, df_tags, f"Toggle hidden tag: {row['Tag']}")
+            save_to_github(df_tasks, df_tags, f"Toggle hidden tag: {tag_name}")
             st.rerun()
 
-        if c4.button("ลบ", key=f"del_tag_{idx}_{row['Tag']}", use_container_width=True):
-            df_tags = df_tags[df_tags["Tag"] != row["Tag"]].reset_index(drop=True)
-            save_to_github(df_tasks, df_tags, f"Delete tag: {row['Tag']}")
+        if c4.button("ลบ", key=f"del_tag_{idx}_{tag_name}", use_container_width=True):
+            df_tags = df_tags[df_tags["Tag"] != tag_name].reset_index(drop=True)
+            save_to_github(df_tasks, df_tags, f"Delete tag: {tag_name}")
             st.rerun()
