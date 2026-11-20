@@ -35,7 +35,9 @@ def get_github_file():
     r = requests.get(API_URL, headers=HEADERS, params={"ref": BRANCH}, timeout=15)
     if r.status_code == 404:
         return EMPTY_TASKS.copy(), DEFAULT_TAGS.copy(), None
-    r.raise_for_status()
+    if not r.ok:
+        st.error(f"GitHub Read Error {r.status_code}: {r.text}")
+        st.stop()
     data = r.json()
     raw_bytes = base64.b64decode(data["content"])
     excel = pd.ExcelFile(io.BytesIO(raw_bytes), engine="openpyxl")
@@ -50,7 +52,6 @@ def get_github_file():
 
 
 def save_to_github(df_tasks: pd.DataFrame, df_tags: pd.DataFrame, commit_msg="Update tasks"):
-    # ดึง sha ล่าสุดก่อนเขียนเสมอ กัน Error 409 Conflict
     r_check = requests.get(API_URL, headers=HEADERS, params={"ref": BRANCH}, timeout=15)
     sha = r_check.json()["sha"] if r_check.status_code == 200 else None
 
@@ -69,16 +70,22 @@ def save_to_github(df_tasks: pd.DataFrame, df_tags: pd.DataFrame, commit_msg="Up
         payload["sha"] = sha
 
     r_put = requests.put(API_URL, headers=HEADERS, json=payload, timeout=15)
-    r_put.raise_for_status()
+    if not r_put.ok:
+        st.error(f"GitHub Save Error {r_put.status_code}: {r_put.text}")
+        st.stop()
+
     st.session_state.df_tasks = df_tasks
     st.session_state.df_tags = df_tags
 
 
 def text_color_for_bg(hex_color: str) -> str:
-    hex_color = hex_color.lstrip("#")
-    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
-    luminance = (0.299 * r + 0.587 * g + 0.114 * b)
-    return "#000000" if luminance > 160 else "#FFFFFF"
+    try:
+        hex_color = str(hex_color).lstrip("#")
+        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+        luminance = (0.299 * r + 0.587 * g + 0.114 * b)
+        return "#000000" if luminance > 160 else "#FFFFFF"
+    except Exception:
+        return "#FFFFFF"
 
 
 def get_display_status(row) -> str:
@@ -142,10 +149,11 @@ page = st.radio(
     horizontal=True,
     label_visibility="collapsed",
 )
+st.divider()
 
 
-# === TAB 1: TASK LIST (Grouped by Tag, Sorted by Due) ===
-with tab_list:
+# === PAGE 1: TASK LIST ===
+if page == "📋 Task List":
     if df_tasks.empty:
         st.info("ยังไม่มีงาน ลองเพิ่มงานจากช่องด้านบนได้เลยครับ")
     else:
@@ -212,10 +220,9 @@ with tab_list:
                         st.rerun()
 
 
-# === TAB 2: CALENDAR ===
-with tab_cal:
-    c_opt1, c_opt2 = st.columns([3, 5])
-    color_mode = c_opt1.radio(
+# === PAGE 2: CALENDAR ===
+elif page == "📅 Calendar":
+    color_mode = st.radio(
         "สีการ์ดในปฏิทิน",
         ["สีตาม Tag (Done เป็นสีเขียว)", "สีตาม Tag ทั้งหมด"],
         horizontal=True,
@@ -252,11 +259,15 @@ with tab_cal:
         "height": 680,
         "firstDay": 1,
     }
-    calendar(events=events, options=cal_options, key="main_calendar")
+    calendar(
+        events=events,
+        options=cal_options,
+        key=f"main_calendar_{color_mode}_{len(events)}",
+    )
 
 
-# === TAB 3: TAG & COLOR SETTINGS ===
-with tab_set:
+# === PAGE 3: TAG & COLOR SETTINGS ===
+elif page == "⚙️ Tag & Color Settings":
     st.subheader("เพิ่ม / แก้ไขสี Tag")
     with st.form("add_tag_form", clear_on_submit=True):
         s1, s2, s3 = st.columns([3, 1, 1.5])
@@ -269,7 +280,7 @@ with tab_set:
                 df_tags.loc[df_tags["Tag"] == name_clean, "Color"] = t_color
             else:
                 df_tags = pd.concat([df_tags, pd.DataFrame([{"Tag": name_clean, "Color": t_color}])], ignore_index=True)
-            save_to_github(df_tags=df_tags, df_tasks=df_tasks, commit_msg=f"Update tag: {name_clean}")
+            save_to_github(df_tasks, df_tags, f"Update tag: {name_clean}")
             st.toast(f"เซฟ Tag '{name_clean}' ลง GitHub แล้ว ✅")
             st.rerun()
 
@@ -283,13 +294,13 @@ with tab_set:
             f'{row["Tag"]}</span>',
             unsafe_allow_html=True,
         )
-        new_c = c2.color_picker("", bg, key=f"cp_{row['Tag']}", label_visibility="collapsed")
+        new_c = c2.color_picker("", bg, key=f"cp_{idx}_{row['Tag']}", label_visibility="collapsed")
         if new_c != bg:
             df_tags.loc[idx, "Color"] = new_c
             save_to_github(df_tasks, df_tags, f"Change color: {row['Tag']}")
             st.rerun()
 
-        if c3.button("ลบ", key=f"del_tag_{row['Tag']}"):
+        if c3.button("ลบ", key=f"del_tag_{idx}_{row['Tag']}"):
             df_tags = df_tags[df_tags["Tag"] != row["Tag"]].reset_index(drop=True)
             save_to_github(df_tasks, df_tags, f"Delete tag: {row['Tag']}")
             st.rerun()
