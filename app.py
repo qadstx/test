@@ -44,6 +44,10 @@ def parse_cal_date(date_str: str):
     return pd.to_datetime(date_str).date()
 
 
+def is_meeting_tag(tag_val) -> bool:
+    return str(tag_val).strip().lower() == "meeting"
+
+
 # --- GitHub Config ---
 TOKEN = st.secrets["GITHUB_TOKEN"]
 REPO = st.secrets["GITHUB_REPO"]
@@ -59,6 +63,7 @@ HEADERS = {
 DEFAULT_TAGS = pd.DataFrame([
     {"Tag": "AML", "Color": "#8E44AD", "Hidden": False},
     {"Tag": "FA Submit", "Color": "#E74C3C", "Hidden": False},
+    {"Tag": "Meeting", "Color": "#16A085", "Hidden": False},
     {"Tag": "General", "Color": "#2980B9", "Hidden": False},
 ])
 TASK_COLUMNS = ["id", "Task", "Tag", "PIC", "Due", "Status", "Urgent", "Note"]
@@ -272,6 +277,214 @@ def get_effective_status(row) -> str:
     return "Pending"
 
 
+# --- Reusable Calendar View Renderer ---
+def render_calendar_page(mode: str, df_tasks: pd.DataFrame, df_tags: pd.DataFrame,
+                         tag_color_map: dict, all_tag_list: list, hidden_tag_set: set):
+    is_meeting_mode = (mode == "meeting")
+
+    color_mode = st.radio(
+        "สีการ์ดในปฏิทิน",
+        ["สีตาม Tag (Done เป็นสีเขียว)", "สีตาม Tag ทั้งหมด", "สีตาม Status (Done/Pending/Late)"],
+        horizontal=True,
+        key=f"cal_color_mode_{mode}",
+    )
+
+    selected_cal_tags = []
+    if is_meeting_mode:
+        co1, co2, _ = st.columns([1.8, 1.8, 4.4])
+        show_pic_on_cal = co1.checkbox("แสดงชื่อ PIC บนการ์ด", value=True, key=f"cal_pic_{mode}")
+        hide_done_cal = co2.checkbox("ซ่อนงานที่ Done แล้ว", value=False, key=f"cal_done_{mode}")
+        show_hidden_tags_cal = True
+    else:
+        non_meeting_tags = [t for t in all_tag_list if not is_meeting_tag(t)]
+        # รวม Tag ที่อาจมีใน Tasks แต่ยังไม่ได้เพิ่มในหน้า Settings
+        extra_tags = [t for t in df_tasks["Tag"].unique() if not is_meeting_tag(t) and t not in non_meeting_tags]
+        filterable_tags = non_meeting_tags + extra_tags
+
+        selected_cal_tags = st.multiselect(
+            "กรอง Tag ที่ต้องการแสดงในปฏิทิน (ปล่อยว่าง = แสดงทั้งหมดยกเว้น Meeting)",
+            options=filterable_tags,
+            placeholder="เลือก Tag ที่ต้องการแสดง...",
+            key="cal_filter_tags_normal",
+        )
+        co1, co2, co3, _ = st.columns([1.8, 1.8, 2.2, 2.2])
+        show_pic_on_cal = co1.checkbox("แสดงชื่อ PIC บนการ์ด", value=True, key=f"cal_pic_{mode}")
+        hide_done_cal = co2.checkbox("ซ่อนงานที่ Done แล้ว", value=False, key=f"cal_done_{mode}")
+        show_hidden_tags_cal = co3.checkbox(
+            f"แสดง Tag ที่ปิดจบแล้ว ({len([t for t in hidden_tag_set if not is_meeting_tag(t)])})",
+            value=False,
+            key=f"cal_hidden_{mode}",
+        )
+
+    st.caption("💡 ข้อความยาวจะขึ้นบรรทัดใหม่ให้อัตโนมัติ | ลากการ์ดเพื่อเลื่อนวัน | คลิกที่การ์ดเพื่อดู Note และแก้ไข | สลับเป็นมุมมอง Week/List ด้านขวาบนได้")
+
+    events = []
+    for _, row in df_tasks.iterrows():
+        if pd.isna(row["Due"]):
+            continue
+
+        row_is_meeting = is_meeting_tag(row["Tag"])
+        if is_meeting_mode and not row_is_meeting:
+            continue
+        if not is_meeting_mode and row_is_meeting:
+            continue
+
+        if hide_done_cal and row["Status"] == "Done":
+            continue
+
+        if not is_meeting_mode:
+            if selected_cal_tags:
+                if row["Tag"] not in selected_cal_tags:
+                    continue
+            elif not show_hidden_tags_cal and row["Tag"] in hidden_tag_set:
+                continue
+
+        eff_st = get_effective_status(row)
+        is_urg_active = bool(row["Urgent"]) and eff_st != "Done"
+        urg_prefix = "🔥 " if is_urg_active else ""
+        prefix = {"Done": "✓ ", "Late": "⚠️ ", "Pending": ""}[eff_st]
+        pic_str = f" [{row['PIC']}]" if show_pic_on_cal and str(row["PIC"]).strip() else ""
+        note_icon = " 📝" if str(row["Note"]).strip() else ""
+
+        if color_mode == "สีตาม Status (Done/Pending/Late)":
+            bg = {"Done": "#27AE60", "Late": "#E74C3C", "Pending": "#F39C12"}[eff_st]
+        elif color_mode == "สีตาม Tag (Done เป็นสีเขียว)" and eff_st == "Done":
+            bg = "#27AE60"
+        else:
+            bg = tag_color_map.get(row["Tag"], "#16A085" if is_meeting_mode else "#3788D8")
+
+        ev = {
+            "id": str(row["id"]),
+            "title": f"{urg_prefix}{prefix}{row['Task']}{pic_str}{note_icon}",
+            "start": str(row["Due"]),
+            "allDay": True,
+            "backgroundColor": bg,
+            "borderColor": "#FF0000" if is_urg_active else bg,
+            "textColor": text_color_for_bg(bg),
+        }
+        if is_urg_active:
+            ev["classNames"] = ["urgent-cal-event"]
+        events.append(ev)
+
+    cal_options = {
+        "initialView": "dayGridMonth",
+        "initialDate": str(today_th()),
+        "editable": True,
+        "eventStartEditable": True,
+        "eventDurationEditable": False,
+        "headerToolbar": {
+            "left": "prev,next today",
+            "center": "title",
+            "right": "dayGridMonth,dayGridWeek,listMonth",
+        },
+        "height": "auto",
+        "firstDay": 1,
+    }
+
+    cal_custom_css = """
+        .fc-daygrid-event {
+            white-space: normal !important;
+            align-items: flex-start !important;
+            padding: 2px 4px !important;
+        }
+        .fc-event-main {
+            white-space: normal !important;
+            overflow: visible !important;
+        }
+        .fc-event-title, .fc-event-title-container {
+            white-space: normal !important;
+            word-break: break-word !important;
+            overflow-wrap: anywhere !important;
+            line-height: 1.25 !important;
+            font-size: 0.82rem !important;
+        }
+        .fc-daygrid-event-harness {
+            margin-bottom: 3px !important;
+        }
+        .urgent-cal-event {
+            border: 2.5px solid #FF0000 !important;
+            box-shadow: 0 0 6px rgba(255, 0, 0, 0.45) !important;
+            font-weight: 700 !important;
+        }
+    """
+
+    tag_filter_key = ",".join(sorted(selected_cal_tags))
+    cal_state = calendar(
+        events=events,
+        options=cal_options,
+        custom_css=cal_custom_css,
+        callbacks=["eventClick", "eventChange"],
+        key=f"cal_{mode}_{color_mode}_{show_pic_on_cal}_{hide_done_cal}_{show_hidden_tags_cal}_{tag_filter_key}_{st.session_state.data_ver}",
+    )
+
+    # ลากย้ายวันบนปฏิทิน -> อัปเดต Due Date ลง Task List & GitHub ทันที
+    if cal_state and cal_state.get("callback") == "eventChange":
+        changed_ev = cal_state.get("eventChange", {}).get("event", {})
+        changed_id = str(changed_ev.get("id", ""))
+        new_start = changed_ev.get("start")
+        if changed_id and new_start:
+            new_due = parse_cal_date(new_start)
+            mask = df_tasks["id"] == changed_id
+            if mask.any():
+                old_due = df_tasks.loc[mask, "Due"].iloc[0]
+                if old_due != new_due:
+                    task_name = df_tasks.loc[mask, "Task"].iloc[0]
+                    df_tasks.loc[mask, "Due"] = new_due
+                    save_to_github(df_tasks, df_tags, f"Move task '{task_name}' to {new_due}")
+                    st.toast(f"ย้าย '{task_name}' ไปวันที่ {new_due} แล้ว ✅")
+                    st.rerun()
+
+    # คลิกที่งานบนปฏิทินเพื่อแก้ไขรายละเอียด
+    if cal_state and cal_state.get("callback") == "eventClick":
+        clicked_id = cal_state["eventClick"]["event"].get("id")
+        matched = df_tasks[df_tasks["id"] == str(clicked_id)]
+        if not matched.empty:
+            row = matched.iloc[0]
+            st.divider()
+            st.subheader(f"✏️ จัดการงาน: {row['Task']}")
+            with st.form(key=f"cal_edit_{mode}_{clicked_id}"):
+                cc1, cc2, cc3, cc4, cc5 = st.columns([2.6, 1.6, 1.5, 1.5, 1.6])
+                ce_task = cc1.text_input("ชื่องาน", value=row["Task"])
+                tag_opts = all_tag_list if row["Tag"] in all_tag_list else all_tag_list + [row["Tag"]]
+                ce_tag = cc2.selectbox("Tag", tag_opts, index=tag_opts.index(row["Tag"]))
+                ce_pic = cc3.text_input("PIC (คั่นด้วย , ถ้าหลายคน)", value=row["PIC"])
+                ce_due = cc4.date_input("Due Date", value=row["Due"] if pd.notna(row["Due"]) else today_th())
+                eff_st = get_effective_status(row)
+                ce_status = cc5.selectbox(
+                    "Status",
+                    STATUS_OPTIONS,
+                    index=STATUS_OPTIONS.index(eff_st),
+                    format_func=lambda x: STATUS_LABELS[x],
+                )
+                cb1, cb2, _ = st.columns([1.4, 2.4, 4.2])
+                ce_urgent = cb1.checkbox("🔥 Urgent", value=bool(row["Urgent"]))
+                ce_no_due = cb2.checkbox("เอา Due Date ออก (ยังไม่มีกำหนด)", value=pd.isna(row["Due"]))
+                ce_note = st.text_area("Note", value=row["Note"], height=80)
+
+                b1, b2, _ = st.columns([1.5, 1.2, 5])
+                save_btn = b1.form_submit_button("💾 บันทึกการแก้ไข", type="primary", use_container_width=True)
+                del_btn = b2.form_submit_button("🗑️ ลบงานนี้", use_container_width=True)
+
+                if save_btn:
+                    mask = df_tasks["id"] == str(clicked_id)
+                    df_tasks.loc[mask, "Task"] = ce_task.strip() or row["Task"]
+                    df_tasks.loc[mask, "Tag"] = ce_tag
+                    df_tasks.loc[mask, "PIC"] = ce_pic.strip()
+                    df_tasks.loc[mask, "Urgent"] = ce_urgent
+                    df_tasks.loc[mask, "Due"] = None if ce_no_due else ce_due
+                    df_tasks.loc[mask, "Status"] = ce_status
+                    df_tasks.loc[mask, "Note"] = ce_note.strip()
+                    save_to_github(df_tasks, df_tags, f"Edit from calendar: {ce_task.strip()}")
+                    st.toast("อัปเดตงานจากปฏิทินแล้ว ✅")
+                    st.rerun()
+
+                if del_btn:
+                    df_tasks = df_tasks[df_tasks["id"] != str(clicked_id)].reset_index(drop=True)
+                    save_to_github(df_tasks, df_tags, f"Delete from calendar: {row['Task']}")
+                    st.toast("ลบงานเรียบร้อยแล้ว 🗑️")
+                    st.rerun()
+
+
 # --- Load Initial Data ---
 if "df_tasks" not in st.session_state:
     with st.spinner("กำลังโหลดข้อมูลจาก GitHub..."):
@@ -345,8 +558,8 @@ with st.form("quick_add", clear_on_submit=True):
 
 
 # --- Main Navigation ---
-nav_items = ["📋 Task List", "📅 Calendar", "⚙️ Tag & Color Settings"]
-nav_cols = st.columns(3)
+nav_items = ["📋 Task List", "📅 Calendar", "🤝 Meeting Calendar", "⚙️ Tag & Color Settings"]
+nav_cols = st.columns(4)
 for col, label in zip(nav_cols, nav_items):
     btn_type = "primary" if st.session_state.active_page == label else "secondary"
     if col.button(label, type=btn_type, use_container_width=True, key=f"nav_{label}"):
@@ -544,7 +757,7 @@ if page == "📋 Task List":
                         if str(row["Note"]).strip():
                             r2.caption(f"📝 {row['Note']}")
 
-                        # 4. PIC (Auto-colored badges, split by comma)
+                        # 4. PIC
                         r_pic.markdown(render_pic_badges(row["PIC"], pic_color_map), unsafe_allow_html=True)
 
                         # 5. Due Date
@@ -607,177 +820,17 @@ if page == "📋 Task List":
                             st.rerun()
 
 
-# === PAGE 2: CALENDAR ===
+# === PAGE 2: NORMAL CALENDAR (Excludes Meeting + Tag Filter) ===
 elif page == "📅 Calendar":
-    color_mode = st.radio(
-        "สีการ์ดในปฏิทิน",
-        ["สีตาม Tag (Done เป็นสีเขียว)", "สีตาม Tag ทั้งหมด", "สีตาม Status (Done/Pending/Late)"],
-        horizontal=True,
-    )
-    co1, co2, co3, _ = st.columns([1.8, 1.8, 2.2, 2.2])
-    show_pic_on_cal = co1.checkbox("แสดงชื่อ PIC บนการ์ด", value=True)
-    hide_done_cal = co2.checkbox("ซ่อนงานที่ Done แล้ว", value=False)
-    show_hidden_tags_cal = co3.checkbox(
-        f"แสดง Tag ที่ปิดจบแล้ว ({len(hidden_tag_set)})",
-        value=False,
-    )
-    st.caption("💡 ข้อความยาวจะขึ้นบรรทัดใหม่ให้อัตโนมัติ | ลากการ์ดเพื่อเลื่อนวัน | คลิกที่การ์ดเพื่อดู Note และแก้ไข | สลับเป็นมุมมอง Week/List ด้านขวาบนได้")
-
-    events = []
-    for _, row in df_tasks.iterrows():
-        if pd.isna(row["Due"]):
-            continue
-        if hide_done_cal and row["Status"] == "Done":
-            continue
-        if not show_hidden_tags_cal and row["Tag"] in hidden_tag_set:
-            continue
-
-        eff_st = get_effective_status(row)
-        is_urg_active = bool(row["Urgent"]) and eff_st != "Done"
-        urg_prefix = "🔥 " if is_urg_active else ""
-        prefix = {"Done": "✓ ", "Late": "⚠️ ", "Pending": ""}[eff_st]
-        pic_str = f" [{row['PIC']}]" if show_pic_on_cal and str(row["PIC"]).strip() else ""
-        note_icon = " 📝" if str(row["Note"]).strip() else ""
-
-        if color_mode == "สีตาม Status (Done/Pending/Late)":
-            bg = {"Done": "#27AE60", "Late": "#E74C3C", "Pending": "#F39C12"}[eff_st]
-        elif color_mode == "สีตาม Tag (Done เป็นสีเขียว)" and eff_st == "Done":
-            bg = "#27AE60"
-        else:
-            bg = tag_color_map.get(row["Tag"], "#3788D8")
-
-        ev = {
-            "id": str(row["id"]),
-            "title": f"{urg_prefix}{prefix}{row['Task']}{pic_str}{note_icon}",
-            "start": str(row["Due"]),
-            "allDay": True,
-            "backgroundColor": bg,
-            "borderColor": "#FF0000" if is_urg_active else bg,
-            "textColor": text_color_for_bg(bg),
-        }
-        if is_urg_active:
-            ev["classNames"] = ["urgent-cal-event"]
-        events.append(ev)
-
-    cal_options = {
-        "initialView": "dayGridMonth",
-        "initialDate": str(today_th()),
-        "editable": True,
-        "eventStartEditable": True,
-        "eventDurationEditable": False,
-        "headerToolbar": {
-            "left": "prev,next today",
-            "center": "title",
-            "right": "dayGridMonth,dayGridWeek,listMonth",
-        },
-        "height": "auto",
-        "firstDay": 1,
-    }
-
-    cal_custom_css = """
-        .fc-daygrid-event {
-            white-space: normal !important;
-            align-items: flex-start !important;
-            padding: 2px 4px !important;
-        }
-        .fc-event-main {
-            white-space: normal !important;
-            overflow: visible !important;
-        }
-        .fc-event-title, .fc-event-title-container {
-            white-space: normal !important;
-            word-break: break-word !important;
-            overflow-wrap: anywhere !important;
-            line-height: 1.25 !important;
-            font-size: 0.82rem !important;
-        }
-        .fc-daygrid-event-harness {
-            margin-bottom: 3px !important;
-        }
-        .urgent-cal-event {
-            border: 2.5px solid #FF0000 !important;
-            box-shadow: 0 0 6px rgba(255, 0, 0, 0.45) !important;
-            font-weight: 700 !important;
-        }
-    """
-
-    cal_state = calendar(
-        events=events,
-        options=cal_options,
-        custom_css=cal_custom_css,
-        callbacks=["eventClick", "eventChange"],
-        key=f"cal_{color_mode}_{show_pic_on_cal}_{hide_done_cal}_{show_hidden_tags_cal}_{st.session_state.data_ver}",
-    )
-
-    # ลากย้ายวันบนปฏิทิน -> อัปเดต Due Date ลง Task List & GitHub ทันที
-    if cal_state and cal_state.get("callback") == "eventChange":
-        changed_ev = cal_state.get("eventChange", {}).get("event", {})
-        changed_id = str(changed_ev.get("id", ""))
-        new_start = changed_ev.get("start")
-        if changed_id and new_start:
-            new_due = parse_cal_date(new_start)
-            mask = df_tasks["id"] == changed_id
-            if mask.any():
-                old_due = df_tasks.loc[mask, "Due"].iloc[0]
-                if old_due != new_due:
-                    task_name = df_tasks.loc[mask, "Task"].iloc[0]
-                    df_tasks.loc[mask, "Due"] = new_due
-                    save_to_github(df_tasks, df_tags, f"Move task '{task_name}' to {new_due}")
-                    st.toast(f"ย้าย '{task_name}' ไปวันที่ {new_due} แล้ว ✅")
-                    st.rerun()
-
-    # คลิกที่งานบนปฏิทินเพื่อแก้ไขรายละเอียด
-    if cal_state and cal_state.get("callback") == "eventClick":
-        clicked_id = cal_state["eventClick"]["event"].get("id")
-        matched = df_tasks[df_tasks["id"] == str(clicked_id)]
-        if not matched.empty:
-            row = matched.iloc[0]
-            st.divider()
-            st.subheader(f"✏️ จัดการงาน: {row['Task']}")
-            with st.form(key=f"cal_edit_{clicked_id}"):
-                cc1, cc2, cc3, cc4, cc5 = st.columns([2.6, 1.6, 1.5, 1.5, 1.6])
-                ce_task = cc1.text_input("ชื่องาน", value=row["Task"])
-                tag_opts = all_tag_list if row["Tag"] in all_tag_list else all_tag_list + [row["Tag"]]
-                ce_tag = cc2.selectbox("Tag", tag_opts, index=tag_opts.index(row["Tag"]))
-                ce_pic = cc3.text_input("PIC (คั่นด้วย , ถ้าหลายคน)", value=row["PIC"])
-                ce_due = cc4.date_input("Due Date", value=row["Due"] if pd.notna(row["Due"]) else today_th())
-                eff_st = get_effective_status(row)
-                ce_status = cc5.selectbox(
-                    "Status",
-                    STATUS_OPTIONS,
-                    index=STATUS_OPTIONS.index(eff_st),
-                    format_func=lambda x: STATUS_LABELS[x],
-                )
-                cb1, cb2, _ = st.columns([1.4, 2.4, 4.2])
-                ce_urgent = cb1.checkbox("🔥 Urgent", value=bool(row["Urgent"]))
-                ce_no_due = cb2.checkbox("เอา Due Date ออก (ยังไม่มีกำหนด)", value=pd.isna(row["Due"]))
-                ce_note = st.text_area("Note", value=row["Note"], height=80)
-
-                b1, b2, _ = st.columns([1.5, 1.2, 5])
-                save_btn = b1.form_submit_button("💾 บันทึกการแก้ไข", type="primary", use_container_width=True)
-                del_btn = b2.form_submit_button("🗑️ ลบงานนี้", use_container_width=True)
-
-                if save_btn:
-                    mask = df_tasks["id"] == str(clicked_id)
-                    df_tasks.loc[mask, "Task"] = ce_task.strip() or row["Task"]
-                    df_tasks.loc[mask, "Tag"] = ce_tag
-                    df_tasks.loc[mask, "PIC"] = ce_pic.strip()
-                    df_tasks.loc[mask, "Urgent"] = ce_urgent
-                    df_tasks.loc[mask, "Due"] = None if ce_no_due else ce_due
-                    df_tasks.loc[mask, "Status"] = ce_status
-                    df_tasks.loc[mask, "Note"] = ce_note.strip()
-                    save_to_github(df_tasks, df_tags, f"Edit from calendar: {ce_task.strip()}")
-                    st.toast("อัปเดตงานจากปฏิทินแล้ว ✅")
-                    st.rerun()
-
-                if del_btn:
-                    df_tasks = df_tasks[df_tasks["id"] != str(clicked_id)].reset_index(drop=True)
-                    save_to_github(df_tasks, df_tags, f"Delete from calendar: {row['Task']}")
-                    st.toast("ลบงานเรียบร้อยแล้ว 🗑️")
-                    st.rerun()
+    render_calendar_page("normal", df_tasks, df_tags, tag_color_map, all_tag_list, hidden_tag_set)
 
 
-# === PAGE 3: TAG & COLOR SETTINGS ===
+# === PAGE 3: MEETING CALENDAR (Only Meeting) ===
+elif page == "🤝 Meeting Calendar":
+    render_calendar_page("meeting", df_tasks, df_tags, tag_color_map, all_tag_list, hidden_tag_set)
+
+
+# === PAGE 4: TAG & COLOR SETTINGS ===
 elif page == "⚙️ Tag & Color Settings":
     st.subheader("เพิ่ม / แก้ไขสี / จัดลำดับ / ปิดจบ Tag")
     with st.form("add_tag_form", clear_on_submit=True):
